@@ -151,6 +151,9 @@ The install step places:
 - `~/.local/share/licenses/omasnap/JetBrainsMono-OFL.txt`
 - `~/.local/share/licenses/omasnap/Inter-OFL.txt`
 
+Launch Omasnap from the application launcher by searching for its name, or use
+the screenshot keybindings above.
+
 Ensure `~/.local/bin` is on `PATH`, then verify the installed CLI:
 
 ```bash
