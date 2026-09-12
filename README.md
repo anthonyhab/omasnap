@@ -1,5 +1,7 @@
 # Omasnap
 
+See the [changelog](CHANGELOG.md) for release highlights and unreleased changes.
+
 A native Wayland screenshot and annotation overlay designed for Omarchy and Hyprland.
 It captures the focused monitor before mapping an exclusive layer-shell surface, so the
 editor never appears in its own screenshot. The editor retains annotations as movable,
