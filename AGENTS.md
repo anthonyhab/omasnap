@@ -125,6 +125,7 @@ wayland wayland-protocols wl-clipboard tesseract tesseract-data-eng`. See
 1. Bump `project(omasnap VERSION ...)` in `CMakeLists.txt`.
    Move the `Unreleased` entries in `CHANGELOG.md` into that version's
    section, add its comparison link, and start a fresh `Unreleased` section.
+   Update the Unreleased comparison link to compare the new tag with `main`.
 2. Build and run the smoke test (above).
 3. Commit, tag `v<version>`, push main and the tag. The GitHub workflow
    attaches the build artifact to the release automatically.
