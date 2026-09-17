@@ -312,7 +312,7 @@ void ScrollCapturePanel::setKeyboardGrab(bool grab) {
   keyboardGrabbed_ = grab;
   layer_->setKeyboardInteractivity(
       grab ? LayerShellQt::Window::KeyboardInteractivityExclusive
-           : LayerShellQt::Window::KeyboardInteractivityNone);
+           : LayerShellQt::Window::KeyboardInteractivityOnDemand);
 }
 
 // ---- capture -----------------------------------------------------------------
