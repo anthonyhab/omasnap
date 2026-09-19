@@ -1,4 +1,6 @@
 /** @fileoverview Captures, renders, saves, and shares screenshots. */
+#include <QTextLayout>
+#include <QTextOption>
 #include "capture.hpp"
 #include "output-config.hpp"
 #include "startup-timing.hpp"
@@ -69,13 +71,62 @@ QFont annotationTextFont(qreal size, TextFont textFont) {
   return font;
 }
 
-QRectF annotationTextBounds(const Annotation &annotation) {
+qreal annotationTextWrapWidth(const Annotation &annotation,
+                              qreal canvasWidth) {
+  if (annotation.textWidth > 0.0)
+    return annotation.textWidth;
+  if (canvasWidth <= 0.0)
+    return 0.0;
+  // Room left before the right edge. Narrower than this and the text would be
+  // wrapping to a sliver, so leave it on one line and let it run.
+  const qreal room = canvasWidth - annotation.start.x();
+  return room >= kMinimumTextWrapWidth ? room : 0.0;
+}
+
+QStringList annotationTextLines(const Annotation &annotation,
+                                qreal canvasWidth) {
+  const QStringList paragraphs = annotation.text.split('\n');
+  const qreal wrap = annotationTextWrapWidth(annotation, canvasWidth);
+  if (wrap <= 0.0)
+    return paragraphs;
+  QStringList lines;
+  for (const QString &paragraph : paragraphs) {
+    if (paragraph.isEmpty()) {
+      lines.push_back(paragraph);
+      continue;
+    }
+    QTextLayout layout(paragraph,
+                       annotationTextFont(annotation.size, annotation.textFont));
+    QTextOption option;
+    option.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
+    layout.setTextOption(option);
+    layout.beginLayout();
+    while (true) {
+      QTextLine line = layout.createLine();
+      if (!line.isValid())
+        break;
+      line.setLineWidth(wrap);
+      lines.push_back(paragraph.mid(line.textStart(), line.textLength()));
+    }
+    layout.endLayout();
+  }
+  return lines;
+}
+
+QRectF annotationTextBounds(const Annotation &annotation,
+                           qreal canvasWidth) {
   const QFontMetricsF metrics(
       annotationTextFont(annotation.size, annotation.textFont));
-  const QStringList lines = annotation.text.split('\n');
+  const QStringList lines = annotationTextLines(annotation, canvasWidth);
   qreal widestLine = 0.0;
-  for (const QString &line : lines)
-    widestLine = std::max(widestLine, metrics.horizontalAdvance(line));
+  for (const QString &line : lines) {
+    // QTextLayout excludes trailing wrap whitespace from naturalTextWidth;
+    // keep indentation, but match that painted width for the pill.
+    QString visible = line;
+    while (!visible.isEmpty() && visible.back().isSpace())
+      visible.chop(1);
+    widestLine = std::max(widestLine, metrics.horizontalAdvance(visible));
+  }
   const QRectF glyphs(
       annotation.start.x(), annotation.start.y() - metrics.ascent(),
       widestLine,
@@ -758,7 +809,7 @@ void drawAnnotation(QPainter &painter, const Annotation &annotation,
   painter.setPen(annotation.color);
   painter.setBrush(Qt::NoBrush);
   const QFontMetricsF metrics(font);
-  const QStringList lines = annotation.text.split('\n');
+  const QStringList lines = annotationTextLines(annotation);
   if (annotation.textBackground == TextBackground::Outline) {
     // A white halo whatever the color: screenshots are mostly light UI, where
     // a dark halo reads as a drop shadow rather than a cut-out, and white
@@ -2003,6 +2054,8 @@ QJsonObject annotationToJson(const Annotation &annotation) {
       object.insert(QStringLiteral("curveControl"),
                     pointArray(*annotation.curveControl));
   }
+  if (annotation.kind == Annotation::Kind::Text)
+    object.insert(QStringLiteral("textWidth"), annotation.textWidth);
   if (!annotation.text.isEmpty())
     object.insert(QStringLiteral("text"), annotation.text);
   if (annotation.kind == Annotation::Kind::Text)
@@ -2066,6 +2119,7 @@ bool annotationFromJson(const QJsonObject &object, Annotation &annotation,
     annotation.curveControl =
         pointFromArray(object.value(QStringLiteral("curveControl")));
   annotation.text = object.value(QStringLiteral("text")).toString();
+  annotation.textWidth = object.value(QStringLiteral("textWidth")).toDouble(0.0);
   annotation.textFont = textFontFromStyleName(
       object.value(QStringLiteral("textFont")).toString());
   annotation.number = object.value(QStringLiteral("number")).toInt();
