@@ -3601,20 +3601,64 @@ bool runRecentsShelfSmoke(QApplication &application, QString &error) {
   return true;
 }
 
-/** Quotes the same way sendCaptureNotification builds --exec. */
-bool runShellQuoteCheck(QString &error) {
-  if (shellQuote(QStringLiteral("omasnap")) != QStringLiteral("'omasnap'")) {
-    error = QStringLiteral("shellQuote did not wrap a simple token");
+/**
+ * omarchy-notification-send treats everything after --exec as the click
+ * command's argv and runs it without shell parsing. The saved-capture
+ * notification must therefore put --exec last and pass the program and the
+ * file URL as separate words; a quoted single string or a trailing -t would
+ * make the click try to run a program that does not exist.
+ */
+bool runNotificationArgvCheck(QString &error) {
+  const QStringList plain =
+      captureNotificationArguments(QStringLiteral("Screenshot copied"));
+  if (plain.contains(QStringLiteral("--exec")) ||
+      plain.contains(QStringLiteral("--image"))) {
+    error = QStringLiteral("image-less notification carried --exec/--image");
     return false;
   }
-  if (shellQuote(QStringLiteral("omasnap /tmp/a.png")) !=
-      QStringLiteral("'omasnap /tmp/a.png'")) {
-    error = QStringLiteral("shellQuote did not keep spaces inside quotes");
+  if (plain.last() != QStringLiteral("Screenshot copied") ||
+      plain.indexOf(QStringLiteral("-t")) < 0 ||
+      plain.at(plain.indexOf(QStringLiteral("-t")) + 1) !=
+          QStringLiteral("4500")) {
+    error = QStringLiteral("image-less notification argv is wrong: %1")
+                .arg(plain.join(QStringLiteral(" | ")));
     return false;
   }
-  if (shellQuote(QStringLiteral("it's")) != QStringLiteral("'it'\"'\"'s'")) {
-    error = QStringLiteral("shellQuote did not escape a single quote (%1)")
-                .arg(shellQuote(QStringLiteral("it's")));
+
+  const QString imagePath = QStringLiteral("/tmp/it's a/shot 1.png");
+  const QStringList saved = captureNotificationArguments(
+      QStringLiteral("Screenshot saved"), imagePath);
+  const qsizetype exec = saved.indexOf(QStringLiteral("--exec"));
+  if (exec < 0 || saved.size() != exec + 3) {
+    error = QStringLiteral("--exec must be followed by exactly program and "
+                           "URL, got: %1")
+                .arg(saved.join(QStringLiteral(" | ")));
+    return false;
+  }
+  const QString &program = saved.at(exec + 1);
+  const QString &url = saved.at(exec + 2);
+  if (program.isEmpty() || program.contains(QStringLiteral("'")) ||
+      program.contains(QStringLiteral(" ")) ||
+      !program.endsWith(QStringLiteral("omasnap"))) {
+    error = QStringLiteral("click program is not a bare omasnap path: %1")
+                .arg(program);
+    return false;
+  }
+  if (url != QUrl::fromLocalFile(imagePath).toString(QUrl::FullyEncoded) ||
+      !url.startsWith(QStringLiteral("file:///")) ||
+      QUrl(url).toLocalFile() != imagePath) {
+    error = QStringLiteral("click URL does not round-trip the image: %1")
+                .arg(url);
+    return false;
+  }
+  const qsizetype timeout = saved.indexOf(QStringLiteral("-t"));
+  if (timeout < 0 || timeout > exec) {
+    error = QStringLiteral("-t must precede --exec");
+    return false;
+  }
+  const qsizetype image = saved.indexOf(QStringLiteral("--image"));
+  if (image < 0 || saved.at(image + 1) != imagePath) {
+    error = QStringLiteral("--image does not carry the saved path");
     return false;
   }
   sendCaptureNotification(QStringLiteral("smoke"));
@@ -8007,7 +8051,7 @@ int main(int argc, char **argv) {
     qWarning().noquote() << snapshotError;
     return 120;
   }
-  if (!runShellQuoteCheck(snapshotError)) {
+  if (!runNotificationArgvCheck(snapshotError)) {
     qWarning().noquote() << snapshotError;
     return 83;
   }

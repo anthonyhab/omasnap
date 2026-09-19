@@ -2024,15 +2024,11 @@ QString recognizeText(const QImage &image, QString &error) {
   return text;
 }
 
-QString shellQuote(QString value) {
-  value.replace('\'', QStringLiteral("'\"'\"'"));
-  return QStringLiteral("'%1'").arg(value);
-}
-
-void sendCaptureNotification(const QString &message, const QString &imagePath) {
+QStringList captureNotificationArguments(const QString &message,
+                                         const QString &imagePath) {
   QStringList arguments{QStringLiteral("-g"), QStringLiteral(""),
                         QStringLiteral("--app-name"), QStringLiteral("omasnap"),
-                        message};
+                        QStringLiteral("-t"), QStringLiteral("4500"), message};
   if (!imagePath.isEmpty()) {
     const QString imageUrl =
         QUrl::fromLocalFile(imagePath).toString(QUrl::FullyEncoded);
@@ -2040,14 +2036,18 @@ void sendCaptureNotification(const QString &message, const QString &imagePath) {
                           .filePath(QStringLiteral("omasnap"));
     if (!QFileInfo::exists(omasnap))
       omasnap = QStringLiteral("omasnap");
+    // --exec consumes the rest of the command line as the click command's
+    // argv, which omarchy-notification-send runs without shell parsing. It
+    // must come last and be given as separate words, never one quoted string.
     arguments << QStringLiteral("Click to edit") << QStringLiteral("--image")
-              << imagePath << QStringLiteral("--exec")
-              << QStringLiteral("%1 %2").arg(shellQuote(omasnap),
-                                             shellQuote(imageUrl));
+              << imagePath << QStringLiteral("--exec") << omasnap << imageUrl;
   }
-  arguments << QStringLiteral("-t") << QStringLiteral("4500");
+  return arguments;
+}
+
+void sendCaptureNotification(const QString &message, const QString &imagePath) {
   QProcess::startDetached(QStringLiteral("omarchy-notification-send"),
-                          arguments);
+                          captureNotificationArguments(message, imagePath));
 }
 
 /// Presents a loaded image as the thing being edited. A log written by the
