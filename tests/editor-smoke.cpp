@@ -17,6 +17,7 @@
 #include "pin-layout-smoke.hpp"
 #include "stitch-smoke.hpp"
 #include "stitch.hpp"
+#include "stroke-smoothing-smoke.hpp"
 #include "pin-lifecycle-smoke.hpp"
 #include "text-band.hpp"
 #include "transform-smoke.hpp"
@@ -9953,6 +9954,10 @@ int main(int argc, char **argv) {
   if (!runOffCanvasCreationSmoke(application, snapshotError)) {
     qWarning().noquote() << snapshotError;
     return 203;
+  }
+  if (!runStrokeSmoothingSmoke(application, snapshotError)) {
+    qWarning().noquote() << snapshotError;
+    return 128;
   }
   if (!runSelectOutsideCanvasSmoke(application, snapshotError)) {
     qWarning().noquote() << snapshotError;

@@ -139,3 +139,11 @@ it never waits for `hyprctl` during a drag. A runtime lock serializes placement
 across pin processes, with short-lived target reservations covering compositor
 animation latency. The initial monitor query uses the same worker pool; a fallback frame maps
 immediately and adopts the display-shaped size when the query finishes.
+
+## Pen smoothing budget
+
+Release-time smoothing bounds the iterative RDP pass to 32,768 point-to-segment
+comparisons over at most 2,048 samples. When that budget runs out, unexamined
+spans retain their samples; no quadratic scan continues on the input thread.
+At most three Chaikin passes then produce 16,384 points. The initial arc-length
+resampling remains linear in the raw stroke length.
