@@ -1,4 +1,4 @@
-/** @fileoverview Owns locks for pinned snapshot files and layout slots. */
+/** @fileoverview Owns locks for pinned snapshot files. */
 #pragma once
 
 #include <QString>
@@ -19,21 +19,4 @@ private:
   QString path_;
   int fd_ = -1;
   bool preserve_ = false;
-};
-
-/** Holds the first free layout slot while a pin is active. */
-class PinSlotLock {
-public:
-  PinSlotLock();
-  ~PinSlotLock();
-
-  PinSlotLock(const PinSlotLock &) = delete;
-  PinSlotLock &operator=(const PinSlotLock &) = delete;
-
-  [[nodiscard]] bool isLocked() const;
-  [[nodiscard]] int index() const;
-
-private:
-  int fd_ = -1;
-  int index_ = -1;
 };
