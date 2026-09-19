@@ -420,6 +420,34 @@ bool supportsCenteredCreation(CaptureEditor::Tool tool) {
          tool == CaptureEditor::Tool::Spotlight;
 }
 
+bool supportsOffCanvasCreation(CaptureEditor::Tool tool) {
+  switch (tool) {
+  case CaptureEditor::Tool::Arrow:
+  case CaptureEditor::Tool::Line:
+  case CaptureEditor::Tool::Freehand:
+  case CaptureEditor::Tool::Highlighter:
+  case CaptureEditor::Tool::Spotlight:
+  case CaptureEditor::Tool::Marker:
+  case CaptureEditor::Tool::Rectangle:
+  case CaptureEditor::Tool::Ellipse:
+  case CaptureEditor::Tool::Text:
+    return true;
+  case CaptureEditor::Tool::Select:
+  case CaptureEditor::Tool::Redact:
+  case CaptureEditor::Tool::Cut:
+  case CaptureEditor::Tool::Ocr:
+  case CaptureEditor::Tool::Eyedropper:
+    return false;
+  }
+  return false;
+}
+
+bool requiresSourcePixels(CaptureEditor::Tool tool) {
+  return tool == CaptureEditor::Tool::Redact ||
+         tool == CaptureEditor::Tool::Cut || tool == CaptureEditor::Tool::Ocr ||
+         tool == CaptureEditor::Tool::Eyedropper;
+}
+
 QString toolAction(CaptureEditor::Tool tool) {
   switch (tool) {
   case CaptureEditor::Tool::Select:
@@ -2052,6 +2080,28 @@ QRectF CaptureEditor::visibleEditImageRect() const {
   return editImageRect().intersected(editViewportRect());
 }
 
+QRectF CaptureEditor::annotationWorkspaceRect() const {
+  return editViewportRect();
+}
+
+bool CaptureEditor::canStartAnnotationAt(const QPointF &position) const {
+  if (!annotationWorkspaceRect().contains(position))
+    return false;
+  // Popovers overlap the content band. Their buttons are handled before the
+  // workspace, while their padding must remain chrome rather than canvas.
+  if ((colorPaletteOpen_ && colorPaletteRect().contains(position)) ||
+      (customColorPickerOpen_ && customColorPanelRect().contains(position)) ||
+      (shapeMenuOpen_ && shapeMenuRect().contains(position)) ||
+      (textSizeMenuOpen_ && textSizePanelRect().contains(position)))
+    return false;
+  if (requiresSourcePixels(tool_))
+    return sourceFrameWidgetRect().contains(position);
+  if (editImageRect().contains(position))
+    return true;
+  return canvasBoundaryMode_ != CanvasBoundaryMode::Image &&
+         supportsOffCanvasCreation(tool_);
+}
+
 qreal CaptureEditor::maxViewZoom() const {
   const QRectF base = baseImageRect();
   if (base.isEmpty() || canvasRect_.width() <= 0)
@@ -2205,7 +2255,10 @@ CaptureEditor::toUnclampedAnnotationPoint(const QPointF &position) const {
 QPointF CaptureEditor::markerPlacementPoint(const QPointF &position) const {
   constexpr qreal kPointerLead = 9.0;
   const qreal lead = kPointerLead / std::max<qreal>(editScale(), 0.001);
-  return toAnnotationPoint(position) - QPointF(lead, lead);
+  const QPointF point = editImageRect().contains(position)
+                            ? toAnnotationPoint(position)
+                            : toUnclampedAnnotationPoint(position);
+  return point - QPointF(lead, lead);
 }
 
 bool CaptureEditor::selectedLayerAcceptsPoint(const QPointF &point) const {
@@ -2242,16 +2295,17 @@ QPointF CaptureEditor::sourcePoint(const QPointF &logicalPoint) const {
 void CaptureEditor::scheduleHighlighterProbe(
     const QPointF &annotationPoint) {
   pendingHighlighterProbePoint_ = annotationPoint;
-  if (highlighterProbeWatcher_.isRunning())
-    return;
   if (capture_.source.isNull() || capture_.previewSize.isEmpty() ||
       !QRectF(QPointF(), selection_.size()).contains(annotationPoint)) {
+    ++highlighterProbeGeneration_;
     pendingHighlighterProbePoint_.reset();
     highlighterPreview_.reset();
     highlighterPreviewPoint_.reset();
     return;
   }
 
+  if (highlighterProbeWatcher_.isRunning())
+    return;
   const QPointF probePoint = *pendingHighlighterProbePoint_;
   pendingHighlighterProbePoint_.reset();
   const quint64 generation = ++highlighterProbeGeneration_;
@@ -2288,7 +2342,8 @@ void CaptureEditor::completeHighlighterProbe() {
   const HighlighterProbeResult result = highlighterProbeWatcher_.result();
   if (result.generation == highlighterProbeGeneration_ &&
       phase_ == Phase::Edit && tool_ == Tool::Highlighter &&
-      highlighterMode_ == HighlighterMode::Snap && !dragging_) {
+      highlighterMode_ == HighlighterMode::Snap && !dragging_ &&
+      sourceFrameWidgetRect().contains(cursor_)) {
     const QRegion oldVisual = pointerMotionRegion(cursor_);
     highlighterPreview_ = result.lock;
     highlighterPreviewPoint_ = result.annotationPoint;
@@ -4455,7 +4510,7 @@ QRegion CaptureEditor::pointerMotionRegion(const QPointF &point) const {
            QRegion(widgetBounds);
   };
 
-  if (tool_ == Tool::Marker && !dragging_ && visibleEditImageRect().contains(point) &&
+  if (tool_ == Tool::Marker && !dragging_ && canStartAnnotationAt(point) &&
       !pointerGrabsLayer()) {
     Annotation marker;
     marker.kind = Annotation::Kind::Marker;
@@ -5069,9 +5124,17 @@ void CaptureEditor::mousePressEvent(QMouseEvent *event) {
   const bool insideImage = visibleEditImageRect().contains(cursor_);
   const QPointF point = insideImage ? toAnnotationPoint(cursor_)
                                     : toUnclampedAnnotationPoint(cursor_);
-  if (!insideImage &&
-      (tool_ != Tool::Select || !selectedLayerAcceptsPoint(point)))
-    return;
+  if (tool_ == Tool::Select) {
+    if (!insideImage && !selectedLayerAcceptsPoint(point))
+      return;
+  } else if (!canStartAnnotationAt(cursor_)) {
+    // Drawing tools may still grab an existing layer edge in the surround;
+    // only a new source-dependent operation is forbidden there.
+    const Interaction handle = selectedHandleAt(point);
+    const int edge = annotationEdgeAt(point);
+    if (handle == Interaction::None && !toolGrabsLayer(edge))
+      return;
+  }
   if (tool_ == Tool::Eyedropper) {
     if (!sourceFrameWidgetRect().contains(cursor_))
       return;
@@ -5293,7 +5356,7 @@ void CaptureEditor::mousePressEvent(QMouseEvent *event) {
       QPointF strokeStart = point;
       if (tool_ == Tool::Highlighter &&
           highlighterMode_ == HighlighterMode::Snap && highlighterPreview_ &&
-          highlighterPreviewPoint_ &&
+          highlighterPreviewPoint_ && sourceFrameWidgetRect().contains(cursor_) &&
           QLineF(*highlighterPreviewPoint_, point).length() <= 24.0)
         highlighterLock_ = highlighterPreview_;
       if (highlighterLock_)
@@ -5825,6 +5888,9 @@ void CaptureEditor::updatePointerCursor() {
     clearHighlighterPreview();
     // An I-beam over committed text reads as edit, although the click moves it.
     applyCursor(Qt::SizeAllCursor);
+  } else if (!dragging_ && !canStartAnnotationAt(cursor_)) {
+    clearHighlighterPreview();
+    applyCursor(Qt::ArrowCursor);
   } else if (tool_ == Tool::Marker) {
     clearHighlighterPreview();
     applyCursor(Qt::PointingHandCursor);
@@ -5839,8 +5905,9 @@ void CaptureEditor::updatePointerCursor() {
       if (dragging_) {
         highlighterPreview_ = highlighterLock_;
         highlighterPreviewPoint_.reset();
-      } else if (visibleEditImageRect().contains(cursor_)) {
-        scheduleHighlighterProbe(toAnnotationPoint(cursor_));
+      } else if (editViewportRect().contains(cursor_) &&
+                 sourceFrameWidgetRect().contains(cursor_)) {
+        scheduleHighlighterProbe(toUnclampedAnnotationPoint(cursor_));
       } else {
         clearHighlighterPreview();
       }
@@ -6635,6 +6702,12 @@ void CaptureEditor::paintEdit(QPainter &painter) {
 
   QImage defaultLayerSource = redactionLayer;
   QRectF defaultLayerBounds(QPointF(), selection_.size());
+  const bool markerPreview = tool_ == Tool::Marker && !dragging_ &&
+                             canStartAnnotationAt(cursor_) &&
+                             !pointerGrabsLayer();
+  const bool markerPreviewOutsideCanvas =
+      markerPreview && !image.contains(cursor_);
+  const bool liveOutsidePreview = dragging_ || markerPreviewOutsideCanvas;
 
   painter.save();
   painter.translate(sourceImage.topLeft());
@@ -6642,7 +6715,7 @@ void CaptureEditor::paintEdit(QPainter &painter) {
   painter.save();
   // While a layer is being carried, let it remain visible over the surround;
   // the background settles to its final integer bounds once on release.
-  if (!dragging_)
+  if (!liveOutsidePreview)
     painter.setClipRect(canvasRect_, Qt::IntersectClip);
   QVector<Annotation> defaultAnnotations;
   defaultAnnotations.reserve(annotations_.size() + 1);
@@ -6694,8 +6767,7 @@ void CaptureEditor::paintEdit(QPainter &painter) {
                        ? highlighterLock_->annotationSize
                        : annotationSize_;
     defaultAnnotations.push_back(std::move(preview));
-  } else if (tool_ == Tool::Marker && visibleEditImageRect().contains(cursor_) && !dragging_ &&
-             !pointerGrabsLayer()) {
+  } else if (markerPreview) {
     // The ghost counter shows where the next one would land, so it belongs
     // only where the press would actually place one: over another counter the
     // press moves that counter instead.
@@ -6709,7 +6781,7 @@ void CaptureEditor::paintEdit(QPainter &painter) {
     defaultAnnotations.push_back(std::move(preview));
   }
   QRectF previewClip = canvasRect_;
-  if (dragging_ && canvasBoundaryMode_ != CanvasBoundaryMode::Framed) {
+  if (liveOutsidePreview && canvasBoundaryMode_ != CanvasBoundaryMode::Framed) {
     previewClip = captureCanvasRect(selection_.size(), defaultAnnotations,
                                     canvasBoundaryMode_);
   }
@@ -6734,7 +6806,7 @@ void CaptureEditor::paintEdit(QPainter &painter) {
   // Framed mode shows the complete layer while it is being carried and
   // settles the background on release. Overflow and Image preview their final
   // canvas bounds live.
-  if (!dragging_ || canvasBoundaryMode_ != CanvasBoundaryMode::Framed)
+  if (!liveOutsidePreview || canvasBoundaryMode_ != CanvasBoundaryMode::Framed)
     painter.setClipRect(previewClip, Qt::IntersectClip);
   const bool hasSpotlight = std::any_of(
       defaultAnnotations.cbegin(), defaultAnnotations.cend(),
