@@ -273,6 +273,7 @@ public:
       : image_(std::move(image)), path_(std::move(path)), snapshotFile_(path_) {
     setWindowTitle(pinTitle());
     setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
+    setAttribute(Qt::WA_ShowWithoutActivating);
     // Fixed, not merely sized: min equal to max is the hint a compositor
     // honors when floating, and Hyprland floats an unresizable window on
     // its own instead of first stretching it into a tile.
@@ -856,7 +857,6 @@ int runPinnedCapture(const QString &path) {
     qWarning("omasnap: could not lock pinned image %s", qUtf8Printable(path));
     return 1;
   }
-  window.show();
   auto *settle = new QTimer(&window);
   settle->setSingleShot(true);
   settle->setInterval(50);
@@ -928,8 +928,40 @@ int runPinnedCapture(const QString &path) {
     window.setFixedSize(pinFrameSize(screen->size()));
     settle->start();
   });
-  monitor->setFuture(QtConcurrent::run(&pinPool(), [] {
-    return compositorScreenRect();
-  }));
+  // Register before mapping: a post-capture preview must not take keyboard
+  // focus from the app the user is returning to. Keep click-to-focus so pin
+  // shortcuts and compositor dragging still work when deliberately selected.
+  const auto applyRules = [] {
+    bool ok = false;
+    const QString output = runForOutput(
+        QStringLiteral("hyprctl"),
+        {QStringLiteral("eval"),
+         QStringLiteral("hl.window_rule({ name = \"omasnap-pins\", "
+                        "match = { class = \"^omasnap$\", title = \"^omasnap-pin [0-9]+$\" }, "
+                        "float = true, pin = true, no_initial_focus = true, "
+                        "no_follow_mouse = true })")}, &ok);
+    return ok && !output.contains(QStringLiteral("error"), Qt::CaseInsensitive);
+  };
+  auto *rules = new QFutureWatcher<bool>(&window);
+  QObject::connect(rules, &QFutureWatcher<bool>::finished, &window,
+                   [&window, rules, monitor, applyRules, attempts = 0]() mutable {
+    if (!rules->result()) {
+      if (++attempts < 3) {
+        QTimer::singleShot(50, &window, [rules, applyRules] {
+          rules->setFuture(QtConcurrent::run(&pinPool(), applyRules));
+        });
+      } else {
+        qWarning("omasnap: could not configure floating pin window");
+        QApplication::exit(1);
+      }
+      return;
+    }
+    rules->deleteLater();
+    window.show();
+    monitor->setFuture(QtConcurrent::run(&pinPool(), [] {
+      return compositorScreenRect();
+    }));
+  });
+  rules->setFuture(QtConcurrent::run(&pinPool(), applyRules));
   return QApplication::exec();
 }

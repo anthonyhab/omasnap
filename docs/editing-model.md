@@ -32,9 +32,11 @@ flatten or repaint the full capture. **Nothing is baked into the working
 image as you draw.** Add a rectangle, change your mind, delete it — the
 source pixels underneath were never touched.
 
-Output happens at exactly three moments, all user-initiated: **Copy**,
+Completing a fresh capture copies and pins it by default. `--editor overlay`
+or `--editor window` opens annotation before output; a pin's Edit button also
+opens the editor on demand. During editing, output happens on **Copy**,
 **Save**, or both together (`CaptureEditor::finish()`), plus pinning a
-snapshot. Each of those calls `renderCapture` once, off the UI thread (see
+snapshot. Each output calls `renderCapture` once, off the UI thread (see
 [threading.md](threading.md)), and writes the result. Until one of those
 happens, everything remains a log entry you can undo.
 

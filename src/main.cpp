@@ -268,6 +268,9 @@ int main(int argc, char **argv) {
         << "Quick output options cannot be combined with an image input";
     return 2;
   }
+  if (!editingImage && quickOutputMode == QuickOutputMode::None &&
+      !parser.isSet(QStringLiteral("editor")))
+    quickOutputMode = QuickOutputMode::CopyAndPin;
   startupTimingMark("options resolved");
   if (!loadCaptureFonts())
     return 1;
@@ -355,7 +358,8 @@ int main(int argc, char **argv) {
   // a composited frame, so mapping the dim overlay first photographs the veil.
   const bool instantFullscreenOutput =
       !editingImage && captureMode == CaptureEditor::CaptureMode::Fullscreen &&
-      quickOutputMode != QuickOutputMode::None;
+      quickOutputMode != QuickOutputMode::None &&
+      quickOutputMode != QuickOutputMode::CopyAndPin;
   if (!editingImage &&
       !captureMonitorPixels(capture.monitor, capture,
                             !instantFullscreenOutput, error)) {

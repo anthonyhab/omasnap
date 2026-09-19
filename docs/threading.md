@@ -96,7 +96,9 @@ purpose every time, since nothing enforces it automatically.
   then PNG-encoded and wrote it to disk in the `pinWatcher_::finished` slot —
   back on the UI thread, after the watcher had already proven the async
   shape was easy to reach. Fixed to do the encode+write inside the same
-  worker lambda as the render, so the slot only launches the pin process.
+  worker lambda as the render and process launch, so the slot only closes
+  the editor or displays an error. Automatic copy-and-pin output uses the
+  same worker helper, including clipboard verification.
 
 ## A known violation, not yet fixed
 

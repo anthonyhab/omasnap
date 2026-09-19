@@ -958,7 +958,6 @@ CaptureEditor::CaptureEditor(CaptureData capture, CaptureMode mode,
     pinPending_ = false;
     const PinResult result = pinWatcher_.result();
     if (result.path.isEmpty()) {
-      --pinCount_;
       setStatus(result.error.isEmpty()
                     ? QStringLiteral("Could not render pinned capture")
                     : result.error);
@@ -1041,9 +1040,11 @@ CaptureEditor::CaptureEditor(CaptureData capture, CaptureMode mode,
             if (phase_ == Phase::Select)
               update();
           });
-  // The shelf belongs to the select overlay only: a file being edited has no
-  // select phase, and quick output never shows one long enough to use it.
-  if (mode != CaptureMode::File && quickOutputMode_ == QuickOutputMode::None) {
+  // Recents remain available during normal capture selection, including
+  // copy-and-pin. Explicit quick output and file inputs do not load them.
+  if (mode != CaptureMode::File &&
+      (quickOutputMode_ == QuickOutputMode::None ||
+       quickOutputMode_ == QuickOutputMode::CopyAndPin)) {
     startupTimingMark("recent shelf load dispatch starting");
     loadRecents();
     startupTimingMark("recent shelf load dispatched");
@@ -3193,6 +3194,7 @@ bool CaptureEditor::waitForSnapshot() {
 }
 
 void CaptureEditor::waitForExport() {
+  QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
   // Wait for the worker, then let the queued finished() signal reach
   // completeFinish(). On success that closes the editor; busy_ stays set.
   while (finishWatcher_.isRunning()) {
@@ -3222,7 +3224,7 @@ void CaptureEditor::handOffEditor(bool toWindow) {
   const OperationLog log{ops_, opIndex_, nextAnnotationId_, nextMarker_,
                          pristineLogicalSize_};
   const QString program = QCoreApplication::applicationFilePath();
-  const auto launcher = handoffLauncher_;
+  const auto launcher = processLauncher_;
   const QString monitor = windowedPresentation_ && screen()
                               ? screen()->name() : capture_.monitor.name;
   auto *watcher = new QFutureWatcher<QString>(this);
@@ -3283,8 +3285,6 @@ void CaptureEditor::pinSnapshot() {
   if (busy_ || pinPending_ || selection_.isEmpty())
     return;
 
-  const int pinIndex = ++pinCount_;
-  const QString program = QCoreApplication::applicationFilePath();
   pinPending_ = true;
   setStatus(QStringLiteral("Preparing pinned capture…"));
   const CaptureData captureCopy = capture_;
@@ -3294,33 +3294,16 @@ void CaptureEditor::pinSnapshot() {
   const bool imageShadow = imageShadow_;
   const CanvasBoundaryMode canvasBoundary = canvasBoundaryMode_;
   const QImage backdrop = customBackdrop_;
+  const auto launcher = processLauncher_;
   pinWatcher_.setFuture(QtConcurrent::run(
       [captureCopy, annotations, selection, background, imageShadow,
-       canvasBoundary, backdrop, pinIndex, program] {
+       canvasBoundary, backdrop, launcher] {
         PinResult result;
-        prunePinnedSnapshots();
-        const QString path = pinnedSnapshotPath(pinIndex);
-        if (path.isEmpty()) {
-          result.error = QStringLiteral("Could not create private runtime directory");
-          return result;
-        }
         const QImage image =
             renderCapture(captureCopy, selection, annotations, background,
                           imageShadow, canvasBoundary, backdrop);
-        if (image.isNull() ||
-            !savePinnedSnapshot(image, path, selection.size().toSize(),
-                                result.error)) {
-          if (result.error.isEmpty())
-            result.error = QStringLiteral("Could not render pinned capture");
-          return result;
-        }
-        if (!QProcess::startDetached(program, {QStringLiteral("--pin"), path})) {
-          QFile::remove(path);
-          QFile::remove(operationLogPath(path));
-          result.error = QStringLiteral("Could not start pinned capture");
-          return result;
-        }
-        result.path = path;
+        result.path = launchPinnedCapture(image, selection.size().toSize(),
+                                          false, result.error, launcher);
         return result;
       }));
 }
@@ -3398,8 +3381,12 @@ void CaptureEditor::enterExport() {
                                 ? OutputMode::Copy
                             : quickOutputMode_ == QuickOutputMode::Save
                                 ? OutputMode::Save
+                            : quickOutputMode_ == QuickOutputMode::CopyAndPin
+                                ? OutputMode::CopyAndPin
                                 : OutputMode::Both;
-  finish(output);
+  // Fullscreen can arrive here during construction; launch only after the
+  // caller has finished setting up the surface and its event loop.
+  QTimer::singleShot(0, this, [this, output] { finish(output); });
 }
 
 void CaptureEditor::handleEscape() {
@@ -3869,7 +3856,8 @@ void CaptureEditor::finish(OutputMode mode) {
   if (busy_ || selection_.isEmpty())
     return;
   busy_ = true;
-  setStatus(mode == OutputMode::Copy ? QStringLiteral("Copying screenshot…")
+  setStatus(mode == OutputMode::Copy || mode == OutputMode::CopyAndPin
+                                     ? QStringLiteral("Copying screenshot…")
                                      : QStringLiteral("Saving screenshot…"));
   // Everything the export needs is copied out so the render, the PNG encode
   // and the wl-copy/wl-paste round trip can run on the worker pool. The
@@ -3884,15 +3872,21 @@ void CaptureEditor::finish(OutputMode mode) {
   const QImage backdrop = customBackdrop_;
   const QString appSlug =
       appFilenameSlug(dominantAppClass(capture_.windows, selection_));
+  const auto launcher = processLauncher_;
   finishWatcher_.setFuture(QtConcurrent::run([captureCopy, selection,
                                               annotations, background,
                                               imageShadow, canvasBoundary,
-                                              backdrop, appSlug, mode]() {
+                                              backdrop, appSlug, mode, launcher]() {
     FinishResult result;
     result.mode = mode;
     const QImage image = renderCapture(captureCopy, selection, annotations,
                                        background, imageShadow,
                                        canvasBoundary, backdrop);
+    if (mode == OutputMode::CopyAndPin) {
+      static_cast<void>(launchPinnedCapture(image, selection.size().toSize(),
+                                            true, result.error, launcher));
+      return result;
+    }
     if (!image.isNull())
       result.thumbnail = image.scaled(kRecentThumbEdge, kRecentThumbEdge,
                                       Qt::KeepAspectRatio,
@@ -3957,6 +3951,11 @@ void CaptureEditor::completeFinish(const FinishResult &result) {
       QFile::remove(snapshotPath_);
     }
     snapshotPath_.clear();
+  }
+  if (result.mode == OutputMode::CopyAndPin) {
+    // The pin is the completion UI; a second notification would repeat it.
+    close();
+    return;
   }
   if (result.mode == OutputMode::Copy)
     sendCaptureNotification(QStringLiteral("Screenshot copied to clipboard"));

@@ -17,8 +17,11 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 
 ### Changed
 
+- Fresh captures copy immediately and open a floating pin, with annotation
+  available from its Edit button. Use `--editor overlay` or `--editor window`
+  to annotate before output; `--copy`/`--save` bypass the pin.
 - Pinned captures are floating compositor windows, with automatic packing
-  and drag-to-stack placement.
+  and drag-to-stack placement, without taking focus when they appear.
 - Default capture selection accepts a region drag, a window click, or a
   click on open space for the focused monitor.
 - Reduce pointer repaint work on large displays and detect highlighter text

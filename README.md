@@ -7,6 +7,9 @@ It captures the focused monitor before mapping an exclusive layer-shell surface,
 editor never appears in its own screenshot. The editor retains annotations as movable,
 resizable vector layers and preserves the monitor's native pixels on scaled displays.
 
+Select a capture and it copies straight to the clipboard, with a floating pin for
+previewing, copying again, dragging into another app, or opening the editor on demand.
+
 [![Looping Omasnap demonstration](assets/omasnap.gif)](assets/omasnap.mp4)
 
 ## Features
@@ -14,6 +17,8 @@ resizable vector layers and preserves the monitor's native pixels on scaled disp
 - Smart selection by default: drag a freeform region, click a window to crop
   it, or click open monitor space for the full monitor. Explicit region,
   window, fullscreen, and scrolling-region modes remain available.
+- Fresh captures copy immediately and appear as floating pins without taking
+  keyboard focus. Hover a pin for Edit, Copy, file drag, and Close controls.
 - A pointer-side readout that turns any drag into a ruler: the pointer position
   while the crosshair is idle, then the frame size in native export pixels while a
   region, a hovered window, or a crop handle is being sized.
@@ -198,8 +203,8 @@ omasnap --scroll
 Drag a region, then pick a direction: **Scroll ↓ / →** scrolls the page
 yourself while omasnap captures each step, and **Auto ↓ / →** scrolls it for
 you, one acknowledged notch at a time, stopping when the page stops moving.
-The frames are aligned and stitched into one image and opened in the editor,
-where `Ctrl`+wheel zooms and the wheel scrolls it.
+The frames are aligned and stitched into one image, copied, and pinned. Open the
+pin's editor to annotate it; `Ctrl`+wheel zooms and the wheel scrolls it.
 
 Compatibility positional names are also accepted:
 
@@ -210,11 +215,15 @@ omasnap fullscreen
 omasnap smart
 ```
 
-These options choose what is initially selected; the editor still controls whether the
-result is copied, saved, or both.
+These options choose what is initially selected. Completing a selection copies and
+pins it. Existing pins are ordinary compositor windows and remain visible in later
+screen captures; close or move them aside when they cover the next capture area.
 
-Quick output skips the annotation editor. Add `--copy` to copy only, `--save` to save
-only, or both flags to copy and save. Region and window captures output after selection;
+For annotation before any output, add `--editor overlay` or `--editor window`.
+The editor then controls whether the result is copied, saved, or both.
+
+Quick output skips the pin as well as the annotation editor. Add `--copy` to copy
+only, `--save` to save only, or both flags to copy and save. Region and window captures output after selection;
 fullscreen captures output immediately. Quick output cannot be combined with `--file`,
 `--clipboard`, or `--pin`.
 
@@ -293,6 +302,8 @@ change where screenshots land or what they are called, create
 # by the compositor, so a capture can be annotated next to another window.
 # W switches a live editor between the two either way, and --editor
 # window|overlay overrides this per invocation.
+# This chooses the on-demand editor's presentation; fresh captures still
+# copy and pin unless --editor is explicitly passed.
 mode = overlay
 # floating (default): a windowed editor asks the compositor to float it at
 # the capture's natural size. tiled: it joins the tiling layout instead.

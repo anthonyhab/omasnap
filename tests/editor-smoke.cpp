@@ -1518,6 +1518,124 @@ bool runPointerDamageRegionCheck(QString &error) {
   return true;
 }
 
+bool runPostCaptureChecks(QString &error) {
+  QTemporaryDir directory;
+  if (!directory.isValid())
+    return false;
+  const QString clipboard = directory.filePath(QStringLiteral("clipboard.png"));
+  const auto executable = [&](const QString &name, const QByteArray &script) {
+    QFile file(directory.filePath(name));
+    if (!file.open(QIODevice::WriteOnly) || file.write(script) != script.size())
+      return false;
+    file.close();
+    return file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner |
+                                QFileDevice::ExeOwner);
+  };
+  if (!executable(QStringLiteral("wl-copy"), QByteArrayLiteral(
+          "#!/bin/sh\n"
+          "if [ -n \"$OMASNAP_TEST_COPY_FAIL\" ]; then echo unavailable >&2; exit 1; fi\n"
+          "cat > \"$OMASNAP_TEST_PIN_CLIPBOARD\"\n")) ||
+      !executable(QStringLiteral("wl-paste"), QByteArrayLiteral(
+          "#!/bin/sh\ncat \"$OMASNAP_TEST_PIN_CLIPBOARD\"\n")))
+    return false;
+  const QByteArray oldPath = qgetenv("PATH");
+  const QByteArray oldClipboard = qgetenv("OMASNAP_TEST_PIN_CLIPBOARD");
+  const QByteArray oldFailure = qgetenv("OMASNAP_TEST_COPY_FAIL");
+  const auto restore = qScopeGuard([&] {
+    qputenv("PATH", oldPath);
+    oldClipboard.isNull() ? qunsetenv("OMASNAP_TEST_PIN_CLIPBOARD")
+                          : qputenv("OMASNAP_TEST_PIN_CLIPBOARD", oldClipboard);
+    oldFailure.isNull() ? qunsetenv("OMASNAP_TEST_COPY_FAIL")
+                        : qputenv("OMASNAP_TEST_COPY_FAIL", oldFailure);
+  });
+  qputenv("PATH", directory.path().toUtf8() + ':' + oldPath);
+  qputenv("OMASNAP_TEST_PIN_CLIPBOARD", clipboard.toUtf8());
+  qunsetenv("OMASNAP_TEST_COPY_FAIL");
+
+  CaptureData capture;
+  capture.monitor.geometry = {0, 0, 800, 600};
+  capture.monitor.pixelSize = {1600, 1200};
+  capture.monitor.scale = 2;
+  capture.source = QImage(1600, 1200, QImage::Format_ARGB32_Premultiplied);
+  capture.source.fill(QColor(QStringLiteral("#345678")));
+  capture.previewSize = {800, 600};
+  capture.windows = {{QRect(100, 100, 300, 200), QStringLiteral("window"),
+                       QStringLiteral("fixture"), QStringLiteral("test")}};
+
+  using Mode = CaptureEditor::CaptureMode;
+  for (const Mode mode : {Mode::Region, Mode::Smart, Mode::Window,
+                          Mode::Fullscreen, Mode::Scroll}) {
+    CaptureEditor editor(capture, mode, QuickOutputMode::CopyAndPin);
+    QString pin;
+    bool launchedOnWorker = false;
+    editor.setProcessLauncherForTest([&](const QString &, const QStringList &args) {
+      launchedOnWorker = QThread::currentThread() != qApp->thread();
+      if (args.size() != 2 || args.first() != QStringLiteral("--pin"))
+        return false;
+      pin = args.last();
+      return true;
+    });
+    editor.resize(800, 600);
+    editor.show();
+    if (mode == Mode::Region) {
+      QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, {100, 100});
+      QTest::mouseMove(&editor, {400, 300});
+      QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier, {400, 300});
+    } else if (mode == Mode::Smart || mode == Mode::Window) {
+      QTest::mouseMove(&editor, {200, 180});
+      QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, {200, 180});
+    } else if (mode == Mode::Scroll) {
+      QImage stitched(800, 2400, QImage::Format_ARGB32_Premultiplied);
+      stitched.fill(Qt::cyan);
+      editor.adoptStitchedForTest(stitched);
+    }
+    const QSize logicalSize = editor.currentSelection().size().toSize();
+    const QImage expected = editor.renderCurrentOutput();
+    if (!editor.exportingForTest() || editor.editingForTest()) {
+      error = QStringLiteral("Fresh capture opened the editor instead of outputting");
+      return false;
+    }
+    editor.waitForExport();
+    const auto cleanup = qScopeGuard([&] {
+      QFile::remove(pin);
+      QFile::remove(operationLogPath(pin));
+    });
+    OperationLog log;
+    if (editor.isVisible() || pin.isEmpty() || !launchedOnWorker ||
+        QImage(pin).convertToFormat(expected.format()) != expected ||
+        QImage(clipboard).convertToFormat(expected.format()) != expected ||
+        !loadOperationLog(operationLogPath(pin), log, error) ||
+        log.previewSize != logicalSize) {
+      error = QStringLiteral("Post-capture output lost pixels, scale, or async pin launch (mode %1)")
+                  .arg(static_cast<int>(mode));
+      return false;
+    }
+  }
+  // Failures preserve the captured pixels in an editable recovery surface
+  // and leave no abandoned pin document. Clipboard failure never launches.
+  for (const bool clipboardFailure : {true, false}) {
+    qputenv("OMASNAP_TEST_COPY_FAIL", clipboardFailure ? "1" : "");
+    const QDir runtime(secureRuntimeDirectory());
+    const auto before = runtime.entryList({QStringLiteral("pin-*")}, QDir::Files);
+    CaptureEditor editor(capture, Mode::Fullscreen, QuickOutputMode::CopyAndPin);
+    bool launchCalled = false;
+    editor.setProcessLauncherForTest([&](const QString &, const QStringList &) {
+      launchCalled = true;
+      return false;
+    });
+    editor.show();
+    editor.waitForExport();
+    if (!editor.isVisible() || !editor.editingForTest() ||
+        launchCalled == clipboardFailure ||
+        runtime.entryList({QStringLiteral("pin-*")}, QDir::Files) != before) {
+      error = QStringLiteral("Post-capture failure lost recovery or leaked a pin");
+      return false;
+    }
+    editor.close();
+  }
+  return true;
+}
+
 bool runQuickOutputChecks(QString &error) {
   QImage image(32, 24, QImage::Format_ARGB32_Premultiplied);
   image.fill(QColor(QStringLiteral("#345678")));
@@ -2617,7 +2735,7 @@ bool runEditorHandoffRoundTrip(QApplication &application, QString &error) {
   }
   QString path;
   QStringList launchArguments;
-  editor.setHandoffLauncherForTest([&](const QString &, const QStringList &arguments) {
+  editor.setProcessLauncherForTest([&](const QString &, const QStringList &arguments) {
     launchArguments = arguments;
     path = arguments.at(1);
     return true;
@@ -2755,7 +2873,7 @@ bool runEditorHandoffRoundTrip(QApplication &application, QString &error) {
                           CaptureEditor::CaptureMode::Scroll}) {
     CaptureEditor automatic(capture, mode, QuickOutputMode::None, {}, nullptr, true);
     QString automaticPath;
-    automatic.setHandoffLauncherForTest([&](const QString &, const QStringList &arguments) {
+    automatic.setProcessLauncherForTest([&](const QString &, const QStringList &arguments) {
       automaticPath = arguments.at(1);
       return true;
     });
@@ -9832,6 +9950,10 @@ int main(int argc, char **argv) {
   if (!runQuickOutputChecks(snapshotError)) {
     qWarning().noquote() << snapshotError;
     return 73;
+  }
+  if (!runPostCaptureChecks(snapshotError)) {
+    qWarning().noquote() << snapshotError;
+    return 137;
   }
   if (!runScreenshotFilenameChecks(snapshotError)) {
     qWarning().noquote() << snapshotError;

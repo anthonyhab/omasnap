@@ -164,7 +164,7 @@ public:
 
 private:
   enum class Phase { Select, Export, Edit };
-  enum class OutputMode { Copy, Save, Both };
+  enum class OutputMode { Copy, Save, Both, CopyAndPin };
   enum class HighlighterMode { Snap, Normal };
 public:
   enum class Interaction {
@@ -303,14 +303,15 @@ public:
     ocrClock_.restart();
     update();
   }
-  /// Injects the process launcher for a smoke test of the actual W action.
+  /// Holds persistence open during the handoff smoke test.
   void setSnapshotFutureForTest(const QFuture<bool> &future) {
     snapshotBusy_ = true;
     snapshotWatcher_.setFuture(future);
   }
-  void setHandoffLauncherForTest(
+  /// Exercises output/handoff without starting another smoke-test process.
+  void setProcessLauncherForTest(
       std::function<bool(const QString &, const QStringList &)> launcher) {
-    handoffLauncher_ = std::move(launcher);
+    processLauncher_ = std::move(launcher);
   }
   /** Re-presents this edit in the other editor (window or overlay) by
    *  spawning it on the handoff document and closing this one. */
@@ -651,7 +652,7 @@ private:
   QSize pristineLogicalSize_;
   QVector<CutOp> cuts_;
   bool windowedPresentation_ = false;
-  std::function<bool(const QString &, const QStringList &)> handoffLauncher_;
+  std::function<bool(const QString &, const QStringList &)> processLauncher_;
   bool windowedHandoffOnEdit_ = false;
   bool windowedBackdropOpaque_ = true;
   Phase phase_ = Phase::Select;
@@ -844,7 +845,6 @@ private:
   bool dragChanged_ = false;
   QString snapshotPath_;
   QuickOutputMode quickOutputMode_ = QuickOutputMode::None;
-  int pinCount_ = 0;
   QString status_ = QStringLiteral("Drag to select an area");
   InlineTextEdit *textEditor_ = nullptr;
   QPointF textPoint_;

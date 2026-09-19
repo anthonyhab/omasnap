@@ -1598,7 +1598,8 @@ bool copyImageToClipboard(const QImage &image, QString &error) {
 }
 
 bool quickOutput(const QImage &image, QuickOutputMode mode, QString &error) {
-  if (image.isNull() || mode == QuickOutputMode::None) {
+  if (image.isNull() || mode == QuickOutputMode::None ||
+      mode == QuickOutputMode::CopyAndPin) {
     error = QStringLiteral("Could not prepare screenshot snapshot");
     return false;
   }
@@ -1834,6 +1835,37 @@ bool savePinnedSnapshot(const QImage &image, const QString &path,
     return false;
   }
   return true;
+}
+
+QString launchPinnedCapture(
+    const QImage &image, const QSize &logicalSize, bool copy, QString &error,
+    const std::function<bool(const QString &, const QStringList &)> &launcher) {
+  prunePinnedSnapshots();
+  const QString path = pinnedSnapshotPath(1);
+  if (path.isEmpty()) {
+    error = QStringLiteral("Could not create private runtime directory");
+    return {};
+  }
+  if (!savePinnedSnapshot(image, path, logicalSize, error))
+    return {};
+  const auto cleanup = [&] {
+    QFile::remove(path);
+    QFile::remove(operationLogPath(path));
+  };
+  if (copy && !copyPngFileToClipboard(path, error)) {
+    cleanup();
+    return {};
+  }
+  const QString program = QCoreApplication::applicationFilePath();
+  const QStringList arguments{QStringLiteral("--pin"), path};
+  if (!(launcher ? launcher(program, arguments)
+                 : QProcess::startDetached(program, arguments))) {
+    cleanup();
+    error = copy ? QStringLiteral("Screenshot copied, but could not start pinned capture")
+                 : QStringLiteral("Could not start pinned capture");
+    return {};
+  }
+  return path;
 }
 
 bool saveTemporarySnapshot(const QImage &image, QString path, QString &error,

@@ -53,7 +53,8 @@ void configureCaptureCommandLine(QCommandLineParser &parser, bool beforeQt) {
       "Omarchy.\n"
       "\n"
       "With no target, drag for a region, click a window, or click open "
-      "space for\nthe full focused monitor.\n"
+      "space for\nthe full focused monitor. Captures copy immediately and open a floating pin;\n"
+      "use the pin's Edit button to annotate, or --editor to edit before output.\n"
       "\n"
       "Only one capture overlay runs at a time. Starting omasnap again while "
       "an\noverlay is open dismisses it: the running instance is asked to "
@@ -81,10 +82,10 @@ void configureCaptureCommandLine(QCommandLineParser &parser, bool beforeQt) {
   parser.addOption(regionOption);
   const QCommandLineOption copyOption(
       QStringLiteral("copy"),
-      QStringLiteral("Copy the capture directly without opening the editor."));
+      QStringLiteral("Copy the capture without opening an editor or pin."));
   const QCommandLineOption saveOption(
       QStringLiteral("save"),
-      QStringLiteral("Save the capture directly without opening the editor."));
+      QStringLiteral("Save the capture without opening an editor or pin."));
   parser.addOption(copyOption);
   parser.addOption(saveOption);
   const QCommandLineOption fileOption(
@@ -105,7 +106,7 @@ void configureCaptureCommandLine(QCommandLineParser &parser, bool beforeQt) {
   parser.addOption(pinOption);
   const QCommandLineOption editorOption(
       QStringLiteral("editor"),
-      QStringLiteral("Editor presentation: overlay (fullscreen, default) or "
+      QStringLiteral("Edit before output, using overlay (fullscreen) or "
                      "window (a normal compositor window). Also configurable "
                      "as [editor] mode in omasnap.conf; W switches a live "
                      "editor between the two."),
@@ -122,7 +123,7 @@ void configureCaptureCommandLine(QCommandLineParser &parser, bool beforeQt) {
   const QCommandLineOption scrollOption(
       QStringLiteral("scroll"),
       QStringLiteral("Capture a scrolling region and stitch it into one tall "
-                     "image, then open it in the editor."));
+                     "image, then copy and pin it."));
   parser.addOption(scrollOption);
   parser.addPositionalArgument(
       QStringLiteral("target"),

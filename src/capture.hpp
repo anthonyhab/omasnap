@@ -4,6 +4,7 @@
 #include "cut.hpp"
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 
@@ -55,7 +56,7 @@ enum class BackgroundStyle {
   Custom
 };
 enum class CanvasBoundaryMode { Framed, Overflow, Image };
-enum class QuickOutputMode { None, Copy, Save, Both };
+enum class QuickOutputMode { None, Copy, Save, Both, CopyAndPin };
 
 enum class SpotlightShape { Ellipse, Rectangle, RoundedRectangle };
 enum class RedactionStyle { Solid, Pixelate };
@@ -383,6 +384,12 @@ bool removeEditorHandoff(const QString &path, const QString &token);
  *  so editing the pin later reopens at the captured scale. */
 [[nodiscard]] bool savePinnedSnapshot(const QImage &image, const QString &path,
                                       const QSize &logicalSize, QString &error);
+/** Saves and launches a private pin, optionally copying the same PNG first.
+ *  Call on a worker: encoding, clipboard verification and process launch block.
+ *  Returns the owned snapshot path, or removes it on failure. */
+[[nodiscard]] QString launchPinnedCapture(
+    const QImage &image, const QSize &logicalSize, bool copy, QString &error,
+    const std::function<bool(const QString &, const QStringList &)> &launcher = {});
 [[nodiscard]] bool saveTemporarySnapshot(const QImage &image, QString path,
                                          QString &error, int quality = -1);
 [[nodiscard]] QString recognizeText(const QImage &image, QString &error);
