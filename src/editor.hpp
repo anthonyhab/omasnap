@@ -1,3 +1,4 @@
+#include <functional>
 #pragma once
 
 #include "background-config.hpp"
@@ -41,16 +42,22 @@ class Window;
 [[nodiscard]] QString spotlightStatusForTest(SpotlightShape shape,
                                              qreal magnification, qreal border);
 
+/// The edit-phase key guide entries, shared by painting and by the
+/// windowed layout that reserves room for the guide.
+[[nodiscard]] QVector<QPair<QString, QString>> editorHotkeyEntries();
+
 class CaptureEditor final : public QWidget {
   Q_OBJECT
 public:
   enum class CaptureMode { Smart, Region, Scroll, Window, Fullscreen, File };
 
+  /// windowedHandoff applies to fresh captures once they enter the edit phase.
   explicit CaptureEditor(CaptureData capture,
                          CaptureMode mode = CaptureMode::Region,
                          QuickOutputMode quickOutput = QuickOutputMode::None,
                          OperationLog log = {},
-                         QWidget *parent = nullptr);
+                         QWidget *parent = nullptr,
+                         bool windowedHandoff = false);
   ~CaptureEditor() override;
 
 signals:
@@ -274,6 +281,38 @@ public:
   [[nodiscard]] int selectedCountForTest() const {
     return static_cast<int>(selectedAnnotations_.size());
   }
+  /** The editor runs as a normal compositor window, not the overlay. */
+  void setWindowedPresentation(bool windowed) {
+    windowedPresentation_ = windowed;
+  }
+  /** A windowed editor's backdrop: solid, or the overlay's see-through
+   *  dim. Solid also drops the translucent surface: an alpha window shows
+   *  the desktop through any repaint gap while resizing or zooming. */
+  void setWindowedBackdropOpaque(bool opaque) {
+    windowedBackdropOpaque_ = opaque;
+    if (windowedPresentation_ && opaque)
+      setAttribute(Qt::WA_TranslucentBackground, false);
+  }
+  /** Top of the content band (below the pinned chrome in a window). */
+  [[nodiscard]] qreal contentBandTop() const;
+  void setOcrOverlayForTest(const QRectF &region, const QString &text) {
+    ocrRegion_ = region;
+    ocrResultText_ = text;
+    ocrClock_.restart();
+    update();
+  }
+  /// Injects the process launcher for a smoke test of the actual W action.
+  void setSnapshotFutureForTest(const QFuture<bool> &future) {
+    snapshotBusy_ = true;
+    snapshotWatcher_.setFuture(future);
+  }
+  void setHandoffLauncherForTest(
+      std::function<bool(const QString &, const QStringList &)> launcher) {
+    handoffLauncher_ = std::move(launcher);
+  }
+  /** Re-presents this edit in the other editor (window or overlay) by
+   *  spawning it on the handoff document and closing this one. */
+  void handOffEditor(bool toWindow);
   /// The layer surface this editor lives on. The scroll state toggles its
   /// keyboard interactivity and input mask while the page underneath is live.
   void setLayerWindow(LayerShellQt::Window *layer) { layer_ = layer; }
@@ -403,6 +442,8 @@ private:
   [[nodiscard]] int hoveredSpotlightAt(const QPointF &position) const;
   [[nodiscard]] QRectF normalizedSelection(const QPointF &first,
                                            const QPointF &second) const;
+  /// Top edge of the toolbar row: pinned under the key guide when
+  /// windowed, hugging the canvas on the overlay. Popovers anchor to it.
   [[nodiscard]] QRectF colorPaletteRect() const;
   [[nodiscard]] QRectF customColorPanelRect() const;
   [[nodiscard]] QRectF shapeMenuRect() const;
@@ -411,11 +452,23 @@ private:
   [[nodiscard]] int cropHandleAt(const QPointF &point) const;
   /// Fit-to-window rect for the selection (unaffected by the view zoom/pan).
   [[nodiscard]] QRectF baseImageRect() const;
-  /// Top of the toolbar row, inset from the surface edge.
+  /// Top of the toolbar row: just under the tab strip's fixed bottom edge,
+  /// independent of the image, so the two can never overlap.
+  [[nodiscard]] QSizeF windowLegendSize() const;
+  mutable int legendWidth_ = -1;
+  mutable QSizeF legendSize_;
   [[nodiscard]] qreal toolbarTop() const;
   /// How much vertical room the toolbar actually needs at the current window
   /// width — the image's top margin, not a guessed constant.
   [[nodiscard]] qreal imageTopMargin() const;
+  /// editImageRect clipped to the viewport band. Zoomed past fit the image
+  /// runs beyond the band; the chrome that frames it (crop outline, handles,
+  /// shadow) frames what is visible, not the off-screen edges.
+  [[nodiscard]] QRectF visibleEditImageRect() const;
+  [[nodiscard]] QRectF editViewportRect() const;
+  /// Top edge the chrome (toolbar, popovers) anchors above: the fit rect at
+  /// zoom 1, the viewport band once zoomed (the content fills it then).
+  [[nodiscard]] qreal chromeAnchorTop() const;
   /// baseImageRect transformed by the current view zoom and pan (content and
   /// annotations map through this). Equals baseImageRect at zoom 1.
   [[nodiscard]] QRectF editImageRect() const;
@@ -586,6 +639,10 @@ private:
   QImage pristineSource_;
   QSize pristineLogicalSize_;
   QVector<CutOp> cuts_;
+  bool windowedPresentation_ = false;
+  std::function<bool(const QString &, const QStringList &)> handoffLauncher_;
+  bool windowedHandoffOnEdit_ = false;
+  bool windowedBackdropOpaque_ = true;
   Phase phase_ = Phase::Select;
   Tool tool_ = Tool::Select;
   /// Set by the first key event, which carries a fresh modifier snapshot.

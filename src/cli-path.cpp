@@ -1,3 +1,5 @@
+#include <QCommandLineParser>
+#include <QCommandLineOption>
 /** @fileoverview Resolves local image targets accepted by the command line. */
 #include "cli-path.hpp"
 
@@ -101,6 +103,18 @@ void configureCaptureCommandLine(QCommandLineParser &parser, bool beforeQt) {
       QStringLiteral("Show an image as a floating window pinned on every workspace."),
       QStringLiteral("path"));
   parser.addOption(pinOption);
+  const QCommandLineOption editorOption(
+      QStringLiteral("editor"),
+      QStringLiteral("Editor presentation: overlay (fullscreen, default) or "
+                     "window (a normal compositor window). Also configurable "
+                     "as [editor] mode in omasnap.conf; W switches a live "
+                     "editor between the two."),
+      QStringLiteral("mode"));
+  parser.addOption(editorOption);
+  QCommandLineOption handoffMonitor(QStringLiteral("handoff-monitor"), QString(),
+                                     QStringLiteral("name"));
+  handoffMonitor.setFlags(QCommandLineOption::HiddenFromHelp);
+  parser.addOption(handoffMonitor);
   const QCommandLineOption scrollOption(
       QStringLiteral("scroll"),
       QStringLiteral("Capture a scrolling region and stitch it into one tall "
@@ -111,4 +125,16 @@ void configureCaptureCommandLine(QCommandLineParser &parser, bool beforeQt) {
       QStringLiteral("Capture mode (smart, region, windows, fullscreen, scroll) or the "
                      "path of an image file to edit."),
       QStringLiteral("[target]"));
+}
+
+bool windowedEditorRequested(const QCommandLineParser &parser, bool defaultWindow) {
+  const QString mode = parser.value(QStringLiteral("editor")).trimmed().toLower();
+  const bool window = mode.isEmpty() ? defaultWindow : mode == QStringLiteral("window");
+  if (!window || parser.isSet(QStringLiteral("pin")))
+    return false;
+  if (!parser.value(QStringLiteral("file")).isEmpty() ||
+      parser.isSet(QStringLiteral("clipboard")))
+    return true;
+  const QStringList positional = parser.positionalArguments();
+  return positional.size() == 1 && !resolveLocalImagePath(positional.first()).isEmpty();
 }
