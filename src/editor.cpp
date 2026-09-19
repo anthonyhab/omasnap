@@ -16,6 +16,8 @@
 #include <QtConcurrent/QtConcurrentRun>
 
 #include <QApplication>
+#include <QUuid>
+#include <QSignalBlocker>
 #include <QClipboard>
 #include <QCursor>
 #include <QDateTime>
@@ -960,14 +962,6 @@ CaptureEditor::CaptureEditor(CaptureData capture, CaptureMode mode,
       setStatus(result.error.isEmpty()
                     ? QStringLiteral("Could not render pinned capture")
                     : result.error);
-      return;
-    }
-    if (!QProcess::startDetached(QCoreApplication::applicationFilePath(),
-                                 {QStringLiteral("--pin"), result.path})) {
-      QFile::remove(result.path);
-      QFile::remove(operationLogPath(result.path));
-      --pinCount_;
-      setStatus(QStringLiteral("Could not start pinned capture"));
       return;
     }
     close();
@@ -2156,24 +2150,27 @@ void CaptureEditor::clampViewOffset() {
   if (base.isEmpty())
     return;
   const QSizeF shown = base.size() * viewZoom_;
-  const qreal bandTop = windowedPresentation_ ? contentBandTop() : 68;
-  const qreal bandBottom = windowedPresentation_ ? 64 : 58;
-  const QRectF available(
-      windowedPresentation_ ? 0 : 30, bandTop,
-      std::max<qreal>(1, width() - (windowedPresentation_ ? 0 : 60)),
-      std::max<qreal>(1, height() - bandTop - bandBottom));
-  // Keep the image covering the viewport where it is larger, and centered
-  // (no free pan) on any axis where it is smaller.
-  const auto clampAxis = [](qreal shownLen, qreal availLen, qreal &offset) {
-    if (shownLen <= availLen) {
-      offset = 0.0;
-      return;
-    }
-    const qreal slack = (shownLen - availLen) / 2.0;
-    offset = std::clamp(offset, -slack, slack);
+  QRectF available = editViewportRect();
+  if (!windowedPresentation_)
+    available.adjust(30, 0, -30, 0);
+  const QRectF unpanned(base.center() - QPointF(shown.width(), shown.height()) / 2.0, shown);
+  const auto clampAxis = [](qreal start, qreal end, qreal low, qreal high, qreal &offset) {
+    offset = end - start <= high - low ? 0.0 : std::clamp(offset, high - end, low - start);
   };
-  clampAxis(shown.width(), available.width(), viewOffset_.rx());
-  clampAxis(shown.height(), available.height(), viewOffset_.ry());
+  clampAxis(unpanned.left(), unpanned.right(), available.left(), available.right(), viewOffset_.rx());
+  clampAxis(unpanned.top(), unpanned.bottom(), available.top(), available.bottom(), viewOffset_.ry());
+}
+
+void CaptureEditor::resizeEvent(QResizeEvent *event) {
+  QWidget::resizeEvent(event);
+  if (phase_ != Phase::Edit)
+    return;
+  viewZoom_ = std::min(viewZoom_, maxViewZoom());
+  clampViewOffset();
+  if (textEditing())
+    layoutTextEditor();
+  updatePointerCursor();
+  update();
 }
 
 void CaptureEditor::setViewZoom(qreal zoom, const QPointF &focus) {
@@ -3252,13 +3249,14 @@ void CaptureEditor::handOffEditor(bool toWindow) {
     if (path.isEmpty())
       return QStringLiteral("Could not create private runtime directory");
     QString error;
-    if (saveTemporarySnapshot(source, path, error, -1) &&
-        saveOperationLog(operationLogPath(path), log, error)) {
+    const QString token = QUuid::createUuid().toString(QUuid::Id128);
+    if (saveEditorHandoff(source, path, log, token, error)) {
       const QStringList arguments{QStringLiteral("--file"), path,
                                    QStringLiteral("--editor"),
                                    toWindow ? QStringLiteral("window")
                                             : QStringLiteral("overlay"),
-                                   QStringLiteral("--handoff-monitor"), monitor};
+                                   QStringLiteral("--handoff-monitor"), monitor,
+                                   QStringLiteral("--handoff-token"), token};
       const bool launched = launcher ? launcher(program, arguments)
                                     : QProcess::startDetached(program, arguments);
       if (launched)
@@ -3267,6 +3265,7 @@ void CaptureEditor::handOffEditor(bool toWindow) {
     }
     QFile::remove(path);
     QFile::remove(operationLogPath(path));
+    QFile::remove(path + QStringLiteral(".handoff"));
     return error;
   }));
 }
@@ -3284,13 +3283,8 @@ void CaptureEditor::pinSnapshot() {
   if (busy_ || pinPending_ || selection_.isEmpty())
     return;
 
-  prunePinnedSnapshots();
-  const QString path = pinnedSnapshotPath(++pinCount_);
-  if (path.isEmpty()) {
-    --pinCount_;
-    setStatus(QStringLiteral("Could not create private runtime directory"));
-    return;
-  }
+  const int pinIndex = ++pinCount_;
+  const QString program = QCoreApplication::applicationFilePath();
   pinPending_ = true;
   setStatus(QStringLiteral("Preparing pinned capture…"));
   const CaptureData captureCopy = capture_;
@@ -3302,8 +3296,14 @@ void CaptureEditor::pinSnapshot() {
   const QImage backdrop = customBackdrop_;
   pinWatcher_.setFuture(QtConcurrent::run(
       [captureCopy, annotations, selection, background, imageShadow,
-       canvasBoundary, backdrop, path] {
+       canvasBoundary, backdrop, pinIndex, program] {
         PinResult result;
+        prunePinnedSnapshots();
+        const QString path = pinnedSnapshotPath(pinIndex);
+        if (path.isEmpty()) {
+          result.error = QStringLiteral("Could not create private runtime directory");
+          return result;
+        }
         const QImage image =
             renderCapture(captureCopy, selection, annotations, background,
                           imageShadow, canvasBoundary, backdrop);
@@ -3312,6 +3312,12 @@ void CaptureEditor::pinSnapshot() {
                                 result.error)) {
           if (result.error.isEmpty())
             result.error = QStringLiteral("Could not render pinned capture");
+          return result;
+        }
+        if (!QProcess::startDetached(program, {QStringLiteral("--pin"), path})) {
+          QFile::remove(path);
+          QFile::remove(operationLogPath(path));
+          result.error = QStringLiteral("Could not start pinned capture");
           return result;
         }
         result.path = path;
@@ -3494,50 +3500,61 @@ void CaptureEditor::ensureTextEditor() {
     textCaretTimer_.start();
     update();
   });
-  connect(textEditor_, &QPlainTextEdit::textChanged, this, [this] {
-    const QString text = textEditor_->toPlainText();
-    const QFontMetrics metrics(textEditor_->font());
-    int widestLine = 0;
-    const QStringList lines = text.split('\n');
-    for (const QString &line : lines)
-      widestLine = std::max(
-          widestLine, metrics.horizontalAdvance(line + QStringLiteral("  ")));
-    const int sidePadding =
-        textEditPill_ ? qRound(std::max(4.0, metrics.height() * 0.18)) : 0;
-    const qreal remaining = canvasRect_.right() - textPoint_.x();
-    const int desiredWidth = textEditWrapWidth_ > 0.0
-        ? std::max(1, qRound(textEditWrapWidth_ * editScale())) + sidePadding * 2
-        : std::max(48, widestLine + sidePadding * 2);
-    // Match the committed layout's image-space minimum. A draft with too
-    // little room stays unbounded and grows the canvas when committed.
-    const int width = textEditWrapWidth_ <= 0.0 &&
-                              remaining >= kMinimumTextWrapWidth
-                          ? std::min(desiredWidth,
-                                     qRound(remaining * editScale()) + sidePadding * 2)
-                          : desiredWidth;
-    textEditor_->resize(width, textEditor_->height());
-    Annotation logical;
-    logical.kind = Annotation::Kind::Text;
-    logical.start = textPoint_;
-    logical.size = textSize_;
-    logical.textFont = textEditFont_;
-    logical.textWidth = textEditWrapWidth_;
-    textEditor_->setLogicalWrap(logical, canvasRect_.right());
-    // QPlainTextEdit needs a little more than QFontMetrics::height(): its
-    // block layout keeps leading/descent outside the nominal line box.
-    // Wrapped lines are not the newline count either, so the laid-out
-    // document is the only thing that knows how tall the draft is now.
-    const int wrapped =
-        std::max(1, qRound(textEditor_->document()->size().height()));
-    const int desiredHeight =
-        wrapped * metrics.lineSpacing() + metrics.descent() + 4;
-    textEditor_->resize(width, desiredHeight);
-    textEditor_->verticalScrollBar()->setValue(0);
-    QTimer::singleShot(0, textEditor_, [editor = textEditor_] {
-      editor->verticalScrollBar()->setValue(0);
-    });
-    update();
+  connect(textEditor_, &QPlainTextEdit::textChanged, this,
+          &CaptureEditor::layoutTextEditor);
+}
+
+void CaptureEditor::layoutTextEditor() {
+  const QString text = textEditor_->toPlainText();
+  const QSignalBlocker blocker(textEditor_);
+  const qreal scale = editScale();
+  QFont displayFont = annotationTextFont(textSize_, textEditFont_);
+  displayFont.setPointSizeF(displayFont.pixelSize() * scale * 72.0 / logicalDpiY());
+  textEditor_->setFont(displayFont);
+  const QFontMetrics metrics(displayFont);
+  int widestLine = 0;
+  const QStringList lines = text.split('\n');
+  for (const QString &line : lines)
+    widestLine = std::max(
+        widestLine, metrics.horizontalAdvance(line + QStringLiteral("  ")));
+  const int sidePadding =
+      textEditPill_ ? qRound(std::max(4.0, metrics.height() * 0.18)) : 0;
+  const QPointF position = sourceFrameWidgetRect().topLeft() + textPoint_ * scale;
+  textEditor_->setViewportMargins(sidePadding, 0, sidePadding, 0);
+  textEditor_->move(qRound(position.x()) - sidePadding, qRound(position.y()));
+  const qreal remaining = canvasRect_.right() - textPoint_.x();
+  const int desiredWidth = textEditWrapWidth_ > 0.0
+      ? std::max(1, qRound(textEditWrapWidth_ * editScale())) + sidePadding * 2
+      : std::max(48, widestLine + sidePadding * 2);
+  // Match the committed layout's image-space minimum. A draft with too
+  // little room stays unbounded and grows the canvas when committed.
+  const int width = textEditWrapWidth_ <= 0.0 &&
+                            remaining >= kMinimumTextWrapWidth
+                        ? std::min(desiredWidth,
+                                   qRound(remaining * editScale()) + sidePadding * 2)
+                        : desiredWidth;
+  textEditor_->resize(width, textEditor_->height());
+  Annotation logical;
+  logical.kind = Annotation::Kind::Text;
+  logical.start = textPoint_;
+  logical.size = textSize_;
+  logical.textFont = textEditFont_;
+  logical.textWidth = textEditWrapWidth_;
+  textEditor_->setLogicalWrap(logical, canvasRect_.right());
+  // QPlainTextEdit needs a little more than QFontMetrics::height(): its
+  // block layout keeps leading/descent outside the nominal line box.
+  // Wrapped lines are not the newline count either, so the laid-out
+  // document is the only thing that knows how tall the draft is now.
+  const int wrapped =
+      std::max(1, qRound(textEditor_->document()->size().height()));
+  const int desiredHeight =
+      wrapped * metrics.lineSpacing() + metrics.descent() + 4;
+  textEditor_->resize(width, desiredHeight);
+  textEditor_->verticalScrollBar()->setValue(0);
+  QTimer::singleShot(0, textEditor_, [editor = textEditor_] {
+    editor->verticalScrollBar()->setValue(0);
   });
+  update();
 }
 
 bool CaptureEditor::textEditing() const {
@@ -3570,14 +3587,6 @@ void CaptureEditor::beginText(const QPointF &point, int annotationIndex,
     textEditFont_ = textFont_;
   }
 
-  const QRectF sourceFrame = sourceFrameWidgetRect();
-  const qreal scale = editScale();
-  const QPointF position = sourceFrame.topLeft() + textPoint_ * scale;
-  QFont displayFont = annotationTextFont(textSize_, textEditFont_);
-  displayFont.setPointSizeF(displayFont.pixelSize() * scale * 72.0 /
-                             logicalDpiY());
-  const QFontMetrics metrics(displayFont);
-  textEditor_->setFont(displayFont);
   textLineCapacity_ = std::max(1, lineCapacity);
   // While typing, show the same cream pill the committed text will have.
   const TextBackground background =
@@ -3592,18 +3601,14 @@ void CaptureEditor::beginText(const QPointF &point, int annotationIndex,
       annotationIndex >= 0 && annotationIndex < annotations_.size()
           ? annotations_.at(annotationIndex).textWidth
           : 0.0;
-  const int pillPad = pill ? qRound(std::max(4.0, metrics.height() * 0.18)) : 0;
   textEditor_->setStyleSheet(
       QStringLiteral(
           "QPlainTextEdit { color: %1; background: transparent; "
           "border: none; margin: 0; padding: 0;"
           " selection-background-color: #0a84ff; selection-color: #ffffff; }")
           .arg(textColor_.name()));
-  textEditor_->setViewportMargins(pillPad, 0, pillPad, 0);
-  textEditor_->setGeometry(qRound(position.x()) - pillPad, qRound(position.y()),
-                           72 + 2 * pillPad,
-                           metrics.lineSpacing() + metrics.descent() + 4);
   textEditor_->setPlainText(existingText);
+  layoutTextEditor();
   textEditor_->show();
   textEditor_->raise();
   textEditor_->setFocus(Qt::MouseFocusReason);

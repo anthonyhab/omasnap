@@ -115,6 +115,8 @@ QByteArray hyprctlOutput(const QStringList &arguments) {
     process.waitForFinished(500);
     return {};
   }
+  if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0)
+    return {};
   return process.readAllStandardOutput();
 }
 
@@ -332,7 +334,7 @@ int main(int argc, char **argv) {
       }
       // Ownership of private handoff files ends once both source and log
       // are in memory. Ordinary user files are excluded by the helper.
-      removeEditorHandoff(localFile);
+      removeEditorHandoff(localFile, parser.value(QStringLiteral("handoff-token")));
     }
     describeFileCapture(capture, image, restoredLog);
     capture.monitor.name = parser.value(QStringLiteral("handoff-monitor"));
@@ -460,26 +462,37 @@ int main(int argc, char **argv) {
           probe->deleteLater();
         }
       });
-      QObject::connect(settle, &QTimer::timeout, &editor, [probe, naturalSize] {
+      const auto placementApplied = std::make_shared<bool>(false);
+      QObject::connect(settle, &QTimer::timeout, &editor, [probe, naturalSize, placementApplied] {
         const qint64 pid = QCoreApplication::applicationPid();
-        probe->setFuture(QtConcurrent::run([pid, naturalSize] {
+        probe->setFuture(QtConcurrent::run([pid, naturalSize, placementApplied] {
           const QJsonArray clients = QJsonDocument::fromJson(
               hyprctlOutput({QStringLiteral("-j"), QStringLiteral("clients")})).array();
           for (const QJsonValue &value : clients) {
             const QJsonObject client = value.toObject();
             if (client.value(QStringLiteral("pid")).toInteger() != pid)
               continue;
-            if (client.value(QStringLiteral("floating")).toBool())
+            const bool floating = client.value(QStringLiteral("floating")).toBool();
+            const QJsonArray size = client.value(QStringLiteral("size")).toArray();
+            const bool sized = size.size() == 2 &&
+                std::abs(size.at(0).toInt() - naturalSize.width()) <= 1 &&
+                std::abs(size.at(1).toInt() - naturalSize.height()) <= 1;
+            if (*placementApplied && floating && sized)
               return true;
             const QString selector = QStringLiteral("window = \"pid:%1\"").arg(pid);
-            hyprctlOutput({QStringLiteral("dispatch"),
-                           QStringLiteral("hl.dsp.window.float({ %1 })").arg(selector)});
-            hyprctlOutput({QStringLiteral("dispatch"),
-                           QStringLiteral("hl.dsp.window.resize({ x = %1, y = %2, relative = false, %3 })")
-                               .arg(naturalSize.width()).arg(naturalSize.height()).arg(selector)});
-            hyprctlOutput({QStringLiteral("dispatch"),
-                           QStringLiteral("hl.dsp.window.center({ %1 })").arg(selector)});
-            return true;
+            const auto dispatch = [](const QString &command) {
+              return hyprctlOutput({QStringLiteral("dispatch"), command}).trimmed() == "ok";
+            };
+            if (!floating && !dispatch(QStringLiteral("hl.dsp.window.float({ %1 })").arg(selector)))
+              return false;
+            if (!dispatch(QStringLiteral("hl.dsp.window.resize({ x = %1, y = %2, relative = false, %3 })")
+                              .arg(naturalSize.width()).arg(naturalSize.height()).arg(selector)) ||
+                !dispatch(QStringLiteral("hl.dsp.window.center({ %1 })").arg(selector)))
+              return false;
+            *placementApplied = true;
+            // A successful command precedes the compositor's state update.
+            // Probe again rather than treating dispatch as confirmed placement.
+            return false;
           }
           return false;
         }));

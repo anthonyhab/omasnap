@@ -46,6 +46,7 @@
 #include <algorithm>
 #include <climits>
 #include <memory>
+#include <functional>
 #include <utility>
 
 namespace {
@@ -219,12 +220,11 @@ private:
   bool ready_ = false;
 };
 
-void movePin(const QString &title, const QRect &target) {
-  static_cast<void>(QtConcurrent::run(&pinPool(), [title, target] {
+QFuture<bool> movePin(const QString &title, const QRect &target) {
+  return QtConcurrent::run(&pinPool(), [title, target] {
     PinPlacement placement;
-    if (placement.ready())
-      placement.move(title, target);
-  }));
+    return placement.ready() && placement.move(title, target);
+  });
 }
 
 void compactPinColumn(const QString &excludedTitle, const QRect &screen) {
@@ -281,6 +281,22 @@ public:
     dragWatchTimer_.setInterval(80);
     connect(&dragWatchTimer_, &QTimer::timeout, this,
             [this] { requestDragSnapshot(); });
+    using DragPayload = QPair<QByteArray, QImage>;
+    auto *payload = new QFutureWatcher<DragPayload>(this);
+    connect(payload, &QFutureWatcher<DragPayload>::finished, this, [this, payload] {
+      auto result = payload->result();
+      dragPng_ = std::move(result.first);
+      dragPreview_ = std::move(result.second);
+      payload->deleteLater();
+    });
+    payload->setFuture(QtConcurrent::run([image = image_, path = path_] {
+      QFile file(path);
+      QByteArray png;
+      if (file.open(QIODevice::ReadOnly))
+        png = file.readAll();
+      return DragPayload{png, image.scaled(256, 256, Qt::KeepAspectRatio,
+                                           Qt::SmoothTransformation)};
+    }));
   }
 
   void setPlacementSnapshot(const QRect &screen, const QVector<CompositorPin> &pins) {
@@ -398,17 +414,15 @@ protected:
         return;
       }
       if (copyButtonRect().contains(position)) {
-        QString error;
-        showToast(copyImageToClipboard(image_, error)
-                      ? QStringLiteral("Copied to clipboard")
-                      : error);
+        copyImage();
         return;
       }
       if (pathButtonRect().contains(position)) {
-        QString error;
-        showToast(copyTextToClipboard(path_, error)
-                      ? QStringLiteral("Copied path")
-                      : error);
+        runAction([path = path_] {
+          QString error;
+          static_cast<void>(copyTextToClipboard(path, error));
+          return error;
+        }, QStringLiteral("Copied path"));
         return;
       }
       if (editButtonRect().contains(position)) {
@@ -428,6 +442,7 @@ protected:
   // that never moves the window was a click and times out instead. Either
   // way the column closes the gap behind a pin that was dragged away.
   void beginDragWatch() {
+    ++snapGeneration_;
     const QString title = windowTitle();
     static_cast<void>(QtConcurrent::run(&pinPool(), [title] {
       PinPlacement placement;
@@ -551,10 +566,32 @@ protected:
     if (!rect.isNull())
       previewInsertion(rect);
     if (!snapSpot_.isNull())
-      movePin(windowTitle(), snapSpot_);
+      requestSnap(snapSpot_, ++snapGeneration_);
     else
       compactPinColumn(windowTitle(), dragScreen_);
     spreadActive_ = false;
+  }
+
+  void requestSnap(const QRect &target, quint64 generation, int attempt = 0) {
+    if (closing_ || generation != snapGeneration_)
+      return;
+    auto *watcher = new QFutureWatcher<bool>(this);
+    connect(watcher, &QFutureWatcher<bool>::finished, this,
+            [this, watcher, target, generation, attempt] {
+      const bool moved = watcher->result();
+      watcher->deleteLater();
+      if (closing_ || generation != snapGeneration_ || moved)
+        return;
+      if (attempt < 2) {
+        QTimer::singleShot(50, this, [this, target, generation, attempt] {
+          requestSnap(target, generation, attempt + 1);
+        });
+      } else {
+        compactPinColumn(windowTitle(), dragScreen_);
+        showToast(QStringLiteral("Could not snap capture into the stack"));
+      }
+    });
+    watcher->setFuture(movePin(windowTitle(), target));
   }
 
   // While the drag hovers the column, the others step aside around a hole
@@ -589,7 +626,7 @@ protected:
     for (const auto &[title, target] : plan.spread) {
       if (commandedTargets_.value(title, QPoint(INT_MIN, INT_MIN)) !=
           target.topLeft()) {
-        movePin(title, target.translated(dragScreen_.topLeft()));
+        static_cast<void>(movePin(title, target.translated(dragScreen_.topLeft())));
         commandedTargets_.insert(title, target.topLeft());
       }
     }
@@ -605,14 +642,47 @@ protected:
     return {};
   }
 
+  void runAction(std::function<QString()> worker, QString message,
+                 bool reopening = false) {
+    if (actionPending_)
+      return;
+    actionPending_ = true;
+    auto *watcher = new QFutureWatcher<QString>(this);
+    connect(watcher, &QFutureWatcher<QString>::finished, this,
+            [this, watcher, message, reopening] {
+      const QString error = watcher->result();
+      watcher->deleteLater();
+      actionPending_ = false;
+      if (!error.isEmpty())
+        showToast(error);
+      else if (reopening) {
+        snapshotFile_.preserveForEditor();
+        close();
+      } else {
+        showToast(message);
+      }
+    });
+    watcher->setFuture(QtConcurrent::run(std::move(worker)));
+  }
+
+  void copyImage() {
+    runAction([image = image_] {
+      QString error;
+      static_cast<void>(copyImageToClipboard(image, error));
+      return error;
+    }, QStringLiteral("Copied to clipboard"));
+  }
+
   void reopenInEditor() {
-    if (!QProcess::startDetached(QCoreApplication::applicationFilePath(),
-                                 {path_}))
-      showToast(QStringLiteral("Could not start omasnap"));
-    else {
-      snapshotFile_.preserveForEditor();
-      close();
-    }
+    runAction([program = QCoreApplication::applicationFilePath(), path = path_] {
+      PinSnapshotFile handoff(path);
+      if (!handoff.isLocked())
+        return QStringLiteral("Could not retain the pinned capture");
+      if (!QProcess::startDetached(program, {path}))
+        return QStringLiteral("Could not start omasnap");
+      handoff.preserveForEditor();
+      return QString();
+    }, {}, true);
   }
 
   void mouseMoveEvent(QMouseEvent *event) override {
@@ -647,23 +717,19 @@ protected:
   }
 
 
-  // A layer surface can still initiate a Wayland uri-list drag just like a
-  // file manager; the six-dot control is the drag handle.
+  // The six-dot control starts a file drag. Its optional PNG and thumbnail
+  // payloads are prepared on a worker so pointer input never encodes images.
   void beginFileDrag() {
     QMimeData *mime = new QMimeData;
     const QList<QUrl> urls{QUrl::fromLocalFile(path_)};
     mime->setUrls(urls);
     mime->setText(urls.constFirst().toLocalFile());
-    QByteArray pngData;
-    QBuffer buffer(&pngData);
-    buffer.open(QIODevice::WriteOnly);
-    if (image_.save(&buffer, "PNG"))
-      mime->setData(QStringLiteral("image/png"), pngData);
-
+    if (!dragPng_.isEmpty())
+      mime->setData(QStringLiteral("image/png"), dragPng_);
     QDrag drag(this);
     drag.setMimeData(mime);
-    drag.setPixmap(QPixmap::fromImage(image_.scaled(
-        256, 256, Qt::KeepAspectRatio, Qt::SmoothTransformation)));
+    if (!dragPreview_.isNull())
+      drag.setPixmap(QPixmap::fromImage(dragPreview_));
     drag.exec(Qt::CopyAction | Qt::MoveAction);
   }
 
@@ -679,10 +745,7 @@ protected:
       return;
     }
     if (event->matches(QKeySequence::Copy)) {
-      QString error;
-      showToast(copyImageToClipboard(image_, error)
-                    ? QStringLiteral("Copied to clipboard")
-                    : error);
+      copyImage();
       return;
     }
     QWidget::keyPressEvent(event);
@@ -753,10 +816,14 @@ private:
   }
 
   QImage image_;
+  QByteArray dragPng_;
+  QImage dragPreview_;
+  bool actionPending_ = false;
   QString path_;
   PinSnapshotFile snapshotFile_;
   QVector<CompositorPin> cachedPins_;
   bool closing_ = false;
+  quint64 snapGeneration_ = 0;
   bool queryPending_ = false;
   bool finishRequested_ = false;
   QTimer dragWatchTimer_;
@@ -843,11 +910,21 @@ int runPinnedCapture(const QString &path) {
   });
   auto *monitor = new QFutureWatcher<QRect>(&window);
   QObject::connect(monitor, &QFutureWatcher<QRect>::finished, &window,
-                   [&window, monitor, settle, screen] {
+                   [&window, monitor, watcher, settle, screen, attempts = 0]() mutable {
     *screen = monitor->result();
-    monitor->deleteLater();
-    if (screen->isEmpty())
+    if (screen->isEmpty() && ++attempts < 10) {
+      QTimer::singleShot(50, &window, [monitor] {
+        monitor->setFuture(QtConcurrent::run(&pinPool(), [] { return compositorScreenRect(); }));
+      });
       return;
+    }
+    monitor->deleteLater();
+    if (screen->isEmpty()) {
+      qWarning("omasnap: could not determine the pin monitor after retries");
+      settle->deleteLater();
+      watcher->deleteLater();
+      return;
+    }
     window.setFixedSize(pinFrameSize(screen->size()));
     settle->start();
   });

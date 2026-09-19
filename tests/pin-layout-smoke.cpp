@@ -124,7 +124,7 @@ bool runPinLayoutSmoke(QString &error) {
   }
 
   // Dragging a pin over the column spreads the others around a hole where
-  // it would land; covering half the hole or more is close enough to snap.
+  // it would land; any overlap with that column is close enough to snap.
   const QVector<QPair<QString, QRect>> column{
       {QStringLiteral("low"), QRect(286, 206, 100, 80)},
       {QStringLiteral("high"), QRect(286, 116, 100, 80)}};

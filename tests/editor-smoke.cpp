@@ -2634,10 +2634,12 @@ bool runEditorHandoffRoundTrip(QApplication &application, QString &error) {
   slowSnapshot.finish();
   for (int attempt = 0; attempt < 500 && editor.isVisible(); ++attempt)
     QTest::qWait(10);
-  if (editor.isVisible() || path.isEmpty() ||
+  const QString token = launchArguments.value(7);
+  if (editor.isVisible() || path.isEmpty() || token.size() != 32 ||
       launchArguments != QStringList{QStringLiteral("--file"), path,
                                       QStringLiteral("--editor"), QStringLiteral("window"),
-                                      QStringLiteral("--handoff-monitor"), QStringLiteral("TEST")}) {
+                                      QStringLiteral("--handoff-monitor"), QStringLiteral("TEST"),
+                                      QStringLiteral("--handoff-token"), token}) {
     error = QStringLiteral("W did not launch the window presentation asynchronously");
     return false;
   }
@@ -2683,15 +2685,33 @@ bool runEditorHandoffRoundTrip(QApplication &application, QString &error) {
     cleanup();
     return false;
   }
-  if (!removeEditorHandoff(path) || QFile::exists(path) || QFile::exists(logPath)) {
+  if (removeEditorHandoff(path, QString(32, QLatin1Char('0'))) ||
+      !QFile::exists(path) || !QFile::exists(logPath)) {
+    error = QStringLiteral("An incorrect handoff token removed the working document");
+    return false;
+  }
+  if (!removeEditorHandoff(path, token) || QFile::exists(path) || QFile::exists(logPath) ||
+      QFile::exists(path + QStringLiteral(".handoff"))) {
     error = QStringLiteral("Consumed handoff files were not removed");
     return false;
   }
   QTemporaryDir ordinary;
   const QString ordinaryPath = ordinary.filePath(QStringLiteral("edit-123-0123456789abcdef.png"));
   image.save(ordinaryPath);
-  if (removeEditorHandoff(ordinaryPath) || !QFile::exists(ordinaryPath)) {
+  if (removeEditorHandoff(ordinaryPath, token) || !QFile::exists(ordinaryPath)) {
     error = QStringLiteral("Handoff cleanup removed an ordinary image");
+    return false;
+  }
+  // Matching the runtime directory and generated name is not ownership.
+  const QString lookalike = editorHandoffPath();
+  if (!image.save(lookalike) || !saveOperationLog(operationLogPath(lookalike), log, error))
+    return false;
+  const bool kept = !removeEditorHandoff(lookalike, token) && QFile::exists(lookalike) &&
+                    QFile::exists(operationLogPath(lookalike));
+  QFile::remove(lookalike);
+  QFile::remove(operationLogPath(lookalike));
+  if (!kept) {
+    error = QStringLiteral("Handoff cleanup removed an ordinary runtime image");
     return false;
   }
   CaptureData reopened;
@@ -2757,6 +2777,7 @@ bool runEditorHandoffRoundTrip(QApplication &application, QString &error) {
     }
     QFile::remove(automaticPath);
     QFile::remove(operationLogPath(automaticPath));
+    QFile::remove(automaticPath + QStringLiteral(".handoff"));
   }
   cleanup();
   return true;
@@ -5893,6 +5914,56 @@ bool runWindowedPaletteAnchorCheck(QApplication &application, QString &error) {
 
 /** Zoomed past fit in a window, the content stays inside the band and the
  *  crop outline and shadow frame what is visible, not the off-screen rect. */
+bool runWindowResizeViewportCheck(QApplication &application, QString &error) {
+  CaptureData capture;
+  capture.source = QImage(1200, 800, QImage::Format_ARGB32_Premultiplied);
+  capture.source.fill(Qt::white);
+  capture.previewSize = capture.source.size();
+  capture.monitor.scale = 1.0;
+  CaptureEditor editor(capture, CaptureEditor::CaptureMode::File);
+  editor.setSuppressSnapshots(true);
+  editor.setWindowedPresentation(true);
+  editor.resize(1200, 900);
+  editor.show();
+  application.processEvents();
+  for (int index = 0; index < 8; ++index) {
+    QWheelEvent zoom(QPointF(600, 500), QPointF(600, 500), {}, {0, 120},
+                     Qt::NoButton, Qt::ControlModifier, Qt::NoScrollPhase, false);
+    QApplication::sendEvent(&editor, &zoom);
+  }
+  QTest::mousePress(&editor, Qt::MiddleButton, Qt::NoModifier, QPoint(600, 500));
+  QTest::mouseMove(&editor, QPoint(1100, 750), 20);
+  QTest::mouseRelease(&editor, Qt::MiddleButton, Qt::NoModifier, QPoint(1100, 750));
+  editor.resize(640, 500);
+  application.processEvents();
+  const QRectF image = editor.editImageRectForTest();
+  const QRectF viewport = editor.editViewportRectForTest();
+  if ((image.width() > viewport.width() &&
+       (image.left() > viewport.left() + 1 || image.right() < viewport.right() - 1)) ||
+      (image.height() > viewport.height() &&
+       (image.top() > viewport.top() + 1 || image.bottom() < viewport.bottom() - 1))) {
+    error = QStringLiteral("Resizing a panned editor left a gap in its viewport");
+    return false;
+  }
+  QTest::keyClick(&editor, Qt::Key_T);
+  QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, viewport.center().toPoint());
+  auto *draft = qobject_cast<QPlainTextEdit *>(QApplication::focusWidget());
+  if (!draft) {
+    error = QStringLiteral("Resize fixture did not open a text draft");
+    return false;
+  }
+  QTest::keyClicks(draft, QStringLiteral("keep this draft"));
+  editor.resize(900, 700);
+  application.processEvents();
+  if (!draft->isVisible() || draft->toPlainText() != QStringLiteral("keep this draft") ||
+      editor.annotationCountForTest() != 0) {
+    error = QStringLiteral("Window resizing changed or committed a live text draft");
+    return false;
+  }
+  editor.close();
+  return true;
+}
+
 bool runWindowedZoomFramingCheck(QApplication &application, QString &error) {
   CaptureData capture;
   capture.monitor.name = QStringLiteral("TEST");
@@ -9910,6 +9981,10 @@ int main(int argc, char **argv) {
   if (!runDraftViewLockCheck(application, snapshotError)) {
     qWarning().noquote() << snapshotError;
     return 11;
+  }
+  if (!runWindowResizeViewportCheck(application, snapshotError)) {
+    qWarning().noquote() << snapshotError;
+    return 204;
   }
   if (!runWindowedZoomFramingCheck(application, snapshotError)) {
     qWarning().noquote() << snapshotError;

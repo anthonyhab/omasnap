@@ -5,14 +5,36 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 
 ## Unreleased
 
+### Added
+
+- Standard, Pointy, Curved, and Double arrow styles, with editable bends.
+- Text wrapping at the canvas edge or a dragged width, preserved when
+  reopening a capture.
+- Annotations can start outside the image and grow the canvas.
+- Adjustable pen smoothing with undoable levels from 0 to 6.
+- A normal editor window alongside the fullscreen overlay; `W` switches
+  presentations while keeping the working document and undo history.
+
 ### Changed
 
+- Pinned captures are floating compositor windows, with automatic packing
+  and drag-to-stack placement.
+- Default capture selection accepts a region drag, a window click, or a
+  click on open space for the focused monitor.
 - Reduce pointer repaint work on large displays and detect highlighter text
   rows on a worker to keep the overlay responsive.
 - Reduce startup time and memory use by bypassing the GTK platform theme;
   overlay fonts and colors are supplied by Omasnap.
 - Preserve the selected rectangle when switching between Region and
   Scrolling Region capture.
+
+### Fixed
+
+- Show Omasnap in the application launcher.
+- Pass notification click actions as separate arguments.
+- Keep the editor viewport and text draft aligned when its window resizes.
+- Retry failed pin and editor placement, and require an ownership token
+  before removing a consumed editor handoff.
 
 ## 1.20.1
 

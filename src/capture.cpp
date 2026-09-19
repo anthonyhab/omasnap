@@ -1751,17 +1751,38 @@ QString editorHandoffPath() {
                               QChar('0')));
 }
 
-bool removeEditorHandoff(const QString &path) {
+bool saveEditorHandoff(const QImage &source, const QString &path,
+                       const OperationLog &log, const QString &token,
+                       QString &error) {
+  if (!saveTemporarySnapshot(source, path, error, -1) ||
+      !saveOperationLog(operationLogPath(path), log, error))
+    return false;
+  QSaveFile marker(path + QStringLiteral(".handoff"));
+  const QByteArray bytes = token.toUtf8();
+  if (bytes.size() != 32 || !marker.open(QIODevice::WriteOnly) ||
+      !marker.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner) ||
+      marker.write(bytes) != bytes.size() || !marker.commit()) {
+    error = QStringLiteral("Could not record editor handoff ownership");
+    return false;
+  }
+  return true;
+}
+
+bool removeEditorHandoff(const QString &path, const QString &token) {
   const QString runtime = secureRuntimeDirectory();
   const QFileInfo file(path);
   static const QRegularExpression name(QStringLiteral("^edit-[0-9]+-[0-9a-f]{16}\\.png$"));
-  if (runtime.isEmpty() || file.absolutePath() != runtime ||
+  if (token.size() != 32 || runtime.isEmpty() || file.absolutePath() != runtime ||
       !name.match(file.fileName()).hasMatch())
     return false;
+  QFile marker(path + QStringLiteral(".handoff"));
+  if (!marker.open(QIODevice::ReadOnly) || marker.read(33) != token.toUtf8())
+    return false;
+  marker.close();
   const QString log = operationLogPath(path);
   const bool sourceRemoved = !QFile::exists(path) || QFile::remove(path);
   const bool logRemoved = !QFile::exists(log) || QFile::remove(log);
-  return sourceRemoved && logRemoved;
+  return sourceRemoved && logRemoved && marker.remove();
 }
 
 void pruneEditorHandoffs() {
@@ -1771,7 +1792,8 @@ void pruneEditorHandoffs() {
   const QDateTime cutoff = QDateTime::currentDateTime().addDays(-1);
   const QFileInfoList stale =
       QDir(runtime).entryInfoList({QStringLiteral("edit-*.png"),
-                                   QStringLiteral("edit-*.json")},
+                                   QStringLiteral("edit-*.json"),
+                                   QStringLiteral("edit-*.png.handoff")},
                                   QDir::Files);
   for (const QFileInfo &entry : stale) {
     if (entry.lastModified() < cutoff)

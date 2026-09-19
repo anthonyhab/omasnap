@@ -141,6 +141,7 @@ protected:
   void mousePressEvent(QMouseEvent *event) override;
   void mouseReleaseEvent(QMouseEvent *event) override;
   void paintEvent(QPaintEvent *event) override;
+  void resizeEvent(QResizeEvent *event) override;
   void wheelEvent(QWheelEvent *event) override;
 
 public:
@@ -377,6 +378,7 @@ public:
   /// annotation-space-to-widget scale. Test accessor: lets a test compute
   /// exact click/expectation points from real geometry instead of hand math.
   [[nodiscard]] QRectF editImageRectForTest() const { return editImageRect(); }
+  [[nodiscard]] QRectF editViewportRectForTest() const { return editViewportRect(); }
   [[nodiscard]] qreal editScaleForTest() const { return editScale(); }
   [[nodiscard]] QPointF toAnnotationPointForTest(const QPointF &widget) const {
     return toAnnotationPoint(widget);
@@ -585,6 +587,7 @@ private:
   /// A confirmed quick capture exports in place without exposing editor chrome.
   void enterExport();
   void ensureTextEditor();
+  void layoutTextEditor();
   [[nodiscard]] bool textEditing() const;
 public:
 
@@ -821,8 +824,8 @@ private:
   CaptureMode pendingMode_ = CaptureMode::Region;
   // Background render for --pin.
   /// Path on success, empty + error set on failure. The render and the PNG
-  /// write both happen in the worker; nothing but launching the pin process
-  /// happens back on the UI thread.
+  /// write and process launch happen in the worker; the GUI only handles
+  /// completion or an error.
   struct PinResult {
     QString path;
     QString error;
