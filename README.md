@@ -252,7 +252,9 @@ The clipboard must offer readable image data. Text-only clipboard contents retur
 error instead of opening an empty editor.
 
 File URLs are accepted too. A saved capture notification's "Click to edit" action launches
-`omasnap` on the finished screenshot, so it can be reopened and re-annotated.
+`omasnap` on the finished screenshot, so it can be reopened and re-annotated. The action is
+handed to `omarchy-notification-send` as `--exec <omasnap> <file:// URL>`, separate argv
+words after a trailing `--exec`, which the shell runs directly without shell parsing.
 
 ### Recent captures
 
