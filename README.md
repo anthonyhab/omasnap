@@ -476,7 +476,8 @@ actions pause the countdown; it resumes when the preview is idle again. Clicking
 scrolling, copying, or editing does not pin the preview. The pin button,
 `Ctrl+P` on a focused preview, or `T` ("tack") while hovered keeps it until closed.
 `T` remains the Text shortcut in the editor. Kept shots show a
-pin icon even when the other controls are hidden. Unpinning starts a fresh
+pin icon in the active window-border color, even when the other controls are
+hidden. Unpinning starts a fresh
 10-second countdown.
 New captures always go in front of the existing stack, including kept shots.
 Opening Edit leaves the preview's expiry policy unchanged; pin it first to keep

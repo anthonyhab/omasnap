@@ -827,8 +827,12 @@ protected:
     const bool hovered = hovered_ && rect == controlRect(hoveredControl_);
     painter.setBrush(hovered ? chromeTheme().buttonHover : chromeTheme().button);
     painter.drawRoundedRect(rect, 6, 6);
-    const QColor foreground = hovered ? chromeTheme().buttonHoverText
-                                       : chromeTheme().buttonText;
+    // Kept state is independent of hover. Gradient borders use their leading
+    // color for the small pin glyph.
+    const QColor foreground = action == QStringLiteral("pin") && expiry_.kept()
+                                  ? chromeTheme().activeBorder.colors.constFirst()
+                              : hovered ? chromeTheme().buttonHoverText
+                                        : chromeTheme().buttonText;
     if (label.isEmpty()) {
       drawToolbarIcon(painter, rect, action, {}, foreground);
     } else {
