@@ -387,6 +387,9 @@ inside it goes live and the scroll controls appear in place. A small **Scroll
 capture** button under an image already open in the editor turns that region
 into a scrolling capture. Explicit `region`, `windows`, `fullscreen`, and
 `scroll` command-line targets remain available for scripts and keybindings.
+While scrolling, use the on-screen Done and Cancel buttons, or `Enter` and
+`Esc` when the overlay has keyboard focus. Move the pointer back over the
+controls to return focus from the live page.
 
 | Input | Action |
 |---|---|

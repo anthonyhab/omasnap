@@ -5,6 +5,11 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 
 ## Unreleased
 
+### Fixed
+
+- Keep the scrolling overlay eligible for keyboard focus after releasing its
+  exclusive grab, so Escape remains available when the overlay has focus.
+
 ## 1.21.0
 
 ### Added
