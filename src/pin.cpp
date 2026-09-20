@@ -15,7 +15,9 @@
 #include <QDir>
 #include <QDrag>
 #include <QFile>
+#include <QFileSystemWatcher>
 #include <QEnterEvent>
+#include <QElapsedTimer>
 #include <QFontMetrics>
 #include <QGuiApplication>
 #include <QHash>
@@ -34,6 +36,9 @@
 #include <QJsonObject>
 #include <QTimer>
 #include <QToolTip>
+#include <QVariantAnimation>
+#include <QRegion>
+#include <QtNumeric>
 
 #include <QUrl>
 #include <QWheelEvent>
@@ -61,6 +66,8 @@ constexpr qreal kDragButtonWidth = 18;
 constexpr qreal kCornerMargin = 14;
 constexpr int kPinGap = 10;
 constexpr int kToastMs = 1200;
+constexpr int kStackWatchMs = 180;
+constexpr int kStackCloseMs = 360;
 
 // Every pin's title starts with this, followed by the process id, so pins
 // can recognize each other in the compositor's client list and a dispatcher
@@ -138,6 +145,7 @@ struct CompositorPin {
   QRect rect;
   bool floating = false;
   bool pinned = false;
+  bool free = false;
 };
 
 QVector<CompositorPin> compositorPinRects() {
@@ -176,8 +184,32 @@ public:
       return;
     QFile file(QDir(root_).filePath(QStringLiteral("pin-targets.json")));
     if (file.open(QIODevice::ReadOnly))
-      targets_ = QJsonDocument::fromJson(file.readAll()).object();
+      state_ = QJsonDocument::fromJson(file.readAll()).object();
+    targets_ = state_.value(QStringLiteral("targets")).toObject();
     pins = compositorPinRects();
+    const QJsonObject free = state_.value(QStringLiteral("free")).toObject();
+    QJsonObject liveFree;
+    for (CompositorPin &pin : pins) {
+      pin.free = free.value(pin.title).toBool();
+      if (pin.free)
+        liveFree.insert(pin.title, true);
+    }
+    state_.insert(QStringLiteral("free"), liveFree);
+    QJsonObject tilts = state_.value(QStringLiteral("tilts")).toObject();
+    for (const QString &title : tilts.keys()) {
+      if (std::none_of(pins.cbegin(), pins.cend(), [&](const CompositorPin &pin) {
+            return pin.title == title;
+          }))
+        tilts.remove(title);
+    }
+    state_.insert(QStringLiteral("tilts"), tilts);
+    for (const QString &key : {QStringLiteral("hover"), QStringLiteral("drag")}) {
+      const QString title = state_.value(key).toString();
+      if (std::none_of(pins.cbegin(), pins.cend(), [&](const CompositorPin &pin) {
+            return pin.title == title;
+          }))
+        state_.remove(key);
+    }
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     for (const QString &title : targets_.keys()) {
       const QJsonObject target = targets_.value(title).toObject();
@@ -197,15 +229,58 @@ public:
     }
   }
   bool ready() const { return ready_; }
+  QString hoverOwner() const { return state_.value(QStringLiteral("hover")).toString(); }
+  QString dragging() const { return state_.value(QStringLiteral("drag")).toString(); }
+  QRect hoverScreen() const {
+    const QJsonArray rect = state_.value(QStringLiteral("screen")).toArray();
+    return rect.size() == 4 ? QRect(rect.at(0).toInt(), rect.at(1).toInt(),
+                                    rect.at(2).toInt(), rect.at(3).toInt()) : QRect();
+  }
+  bool setHover(const QString &title, const QRect &screen = {}) {
+    state_.insert(QStringLiteral("hover"), title);
+    state_.insert(QStringLiteral("screen"),
+                  QJsonArray{screen.x(), screen.y(), screen.width(), screen.height()});
+    return save();
+  }
+  void beginDrag(const QString &title) {
+    state_.insert(QStringLiteral("drag"), title);
+    setTilt(title, 0.0);
+    release(title);
+  }
+  void endDrag(const QString &title) {
+    if (dragging() == title) {
+      state_.remove(QStringLiteral("drag"));
+      save();
+    }
+  }
+  void setFree(const QString &title, bool free) {
+    setTilt(title, 0.0);
+    auto entries = state_.value(QStringLiteral("free")).toObject();
+    if (free)
+      entries.insert(title, true);
+    else
+      entries.remove(title);
+    state_.insert(QStringLiteral("free"), entries);
+    for (CompositorPin &pin : pins) {
+      if (pin.title == title)
+        pin.free = free;
+    }
+    save();
+  }
+  void setTilt(const QString &title, qreal degrees) {
+    auto tilts = state_.value(QStringLiteral("tilts")).toObject();
+    tilts.insert(title, degrees);
+    state_.insert(QStringLiteral("tilts"), tilts);
+  }
   void release(const QString &title) {
     targets_.remove(title);
     save();
   }
   bool move(const QString &title, const QRect &rect) {
-    const auto pin = std::find_if(pins.cbegin(), pins.cend(), [&](const CompositorPin &p) {
+    const auto pin = std::find_if(pins.begin(), pins.end(), [&](const CompositorPin &p) {
       return p.title == title;
     });
-    if (pin == pins.cend())
+    if (pin == pins.end())
       return false;
     targets_.insert(title, QJsonObject{{QStringLiteral("x"), rect.x()},
                                       {QStringLiteral("y"), rect.y()},
@@ -214,21 +289,103 @@ public:
                                       {QStringLiteral("time"), QDateTime::currentMSecsSinceEpoch()}});
     if (!save())
       return false;
-    if (hyprDispatch(pinMoveDispatch(pin->address, rect.x(), rect.y())))
+    if (hyprDispatch(pinMoveDispatch(pin->address, rect.x(), rect.y()))) {
+      pin->rect = rect;
       return true;
+    }
     targets_.remove(title);
     save();
     return false;
+  }
+  QVector<QPair<QString, QRect>> column(const QRect &screen,
+                                       const QString &excluded = {}) const {
+    QVector<QPair<QString, QRect>> result;
+    for (const CompositorPin &pin : pins) {
+      const QRect local = pin.rect.translated(-screen.topLeft());
+      if (!pin.free && pin.title != excluded && screen.intersects(pin.rect) &&
+          pinInColumn(local, screen.size(), qRound(kCornerMargin), kPinGap))
+        result.push_back({pin.title, local});
+    }
+    std::sort(result.begin(), result.end(), [](const auto &a, const auto &b) {
+      if (a.second.right() != b.second.right())
+        return a.second.right() > b.second.right();
+      return a.second.bottom() > b.second.bottom();
+    });
+    return result;
+  }
+  bool arrange(const QRect &screen, bool expanded, const QString &excluded = {},
+               const QString &newFront = {}) {
+    if (screen.isEmpty())
+      return false;
+    auto ordered = column(screen, newFront.isEmpty() ? excluded : newFront);
+    QVector<QRect> blockers;
+    for (const CompositorPin &pin : pins) {
+      if (pin.title == excluded)
+        continue;
+      if (pin.title == newFront) {
+        ordered.prepend({pin.title, pin.rect.translated(-screen.topLeft())});
+      } else if (screen.intersects(pin.rect) &&
+                 std::none_of(ordered.cbegin(), ordered.cend(), [&](const auto &card) {
+                   return card.first == pin.title;
+                 })) {
+        blockers.push_back(pin.rect.translated(-screen.topLeft()));
+      }
+    }
+    const auto layout = pinStackLayout(ordered, blockers, screen.size(),
+                                        kPinGap, qRound(kCornerMargin), expanded);
+    if (layout.size() != ordered.size())
+      return true; // No complete layout fits: leave every window where it is.
+    auto tilts = state_.value(QStringLiteral("tilts")).toObject();
+    int depth = 0;
+    int columnRight = INT_MIN;
+    for (const auto &[title, rect] : layout) {
+      if (rect.right() != columnRight) {
+        columnRight = rect.right();
+        depth = 0;
+      }
+      tilts.insert(title, pinStackTilt(depth++, expanded));
+    }
+    if (tilts != state_.value(QStringLiteral("tilts")).toObject()) {
+      state_.insert(QStringLiteral("tilts"), tilts);
+      if (!save())
+        return false;
+    }
+    bool changed = !newFront.isEmpty();
+    for (const auto &[title, rect] : layout) {
+      const auto pin = std::find_if(pins.cbegin(), pins.cend(), [&](const CompositorPin &p) {
+        return p.title == title;
+      });
+      const QRect target = rect.translated(screen.topLeft());
+      if (pin != pins.cend() && pin->rect != target) {
+        if (!move(title, target))
+          return false;
+        changed = true;
+      }
+    }
+    // Hover focus can raise any exposed card. Restore the deck from back
+    // to front without transferring keyboard focus when it folds.
+    if (!expanded && changed) {
+      for (auto card = layout.crbegin(); card != layout.crend(); ++card) {
+        const auto pin = std::find_if(pins.cbegin(), pins.cend(), [&](const CompositorPin &p) {
+          return p.title == card->first;
+        });
+        if (pin != pins.cend() && !hyprDispatch(pinRaiseDispatch(pin->address)))
+          return false;
+      }
+    }
+    return true;
   }
   QVector<CompositorPin> pins;
 private:
   bool save() {
     QSaveFile file(QDir(root_).filePath(QStringLiteral("pin-targets.json")));
-    const QByteArray data = QJsonDocument(targets_).toJson(QJsonDocument::Compact);
+    state_.insert(QStringLiteral("targets"), targets_);
+    const QByteArray data = QJsonDocument(state_).toJson(QJsonDocument::Compact);
     return file.open(QIODevice::WriteOnly) && file.write(data) == data.size() && file.commit();
   }
   QString root_;
   QLockFile lock_;
+  QJsonObject state_;
   QJsonObject targets_;
   bool ready_ = false;
 };
@@ -236,6 +393,7 @@ private:
 QFuture<bool> movePin(const QString &title, const QRect &target) {
   return QtConcurrent::run(&pinPool(), [title, target] {
     PinPlacement placement;
+    placement.setTilt(title, 0.0);
     return placement.ready() && placement.move(title, target);
   });
 }
@@ -245,39 +403,65 @@ void compactPinColumn(const QString &excludedTitle, const QRect &screen) {
     PinPlacement placement;
     if (!placement.ready() || screen.isEmpty())
       return;
-    QVector<CompositorPin> column;
-    QVector<QRect> blockers;
-    for (CompositorPin pin : placement.pins) {
-      if (pin.title == excludedTitle || !screen.intersects(pin.rect))
-        continue;
-      pin.rect.translate(-screen.topLeft());
-      if (pinInColumn(pin.rect, screen.size(), qRound(kCornerMargin), kPinGap))
-        column.push_back(pin);
-      else
-        blockers.push_back(pin.rect);
-    }
-    std::sort(column.begin(), column.end(), [screen](const CompositorPin &a, const CompositorPin &b) {
-      const auto columnIndex = [screen](const QRect &rect) {
-        return qRound(qreal(screen.width() - qRound(kCornerMargin) - rect.right() - 1) /
-                        (rect.width() + kPinGap));
-      };
-      const int aColumn = columnIndex(a.rect), bColumn = columnIndex(b.rect);
-      if (aColumn != bColumn)
-        return aColumn < bColumn;
-      return a.rect.y() > b.rect.y();
-    });
-    for (const CompositorPin &pin : column) {
-      const auto at = pinPackedPosition(blockers, screen.size(), pin.rect.size(),
-                                        kPinGap, qRound(kCornerMargin));
-      if (!at)
-        return;
-      const QRect target(*at, pin.rect.size());
-      if ((*at - pin.rect.topLeft()).manhattanLength() > 4 &&
-          !placement.move(pin.title, target.translated(screen.topLeft())))
-        return;
-      blockers.push_back(target);
-    }
+    const bool expanded = !placement.dragging().isEmpty() ||
+        (!placement.hoverOwner().isEmpty() && placement.hoverScreen() == screen);
+    placement.arrange(screen, expanded, excludedTitle);
   }));
+}
+
+struct StackSnapshot {
+  QRect screen;
+  QVector<CompositorPin> pins;
+  bool watching = false;
+  bool outside = false;
+};
+
+// Exactly one hovered pin owns the short-lived fan watch. Ownership moves
+// with the pointer; crossing the gaps keeps the fan open. No idle polling.
+StackSnapshot watchPinStack(const QString &title, const QRect &screen,
+                            bool opening, bool mayClose) {
+  PinPlacement placement;
+  if (!placement.ready())
+    return {screen, {}, true};
+  if (!placement.dragging().isEmpty())
+    return {screen, placement.pins, placement.hoverOwner() == title};
+  if (opening) {
+    const auto column = placement.column(screen);
+    if (std::none_of(column.cbegin(), column.cend(), [&](const auto &card) {
+          return card.first == title;
+        })) {
+      if (placement.hoverOwner() == title) {
+        placement.arrange(placement.hoverScreen(), false);
+        placement.setHover({});
+      }
+      return {};
+    }
+    if (!placement.hoverOwner().isEmpty() && placement.hoverScreen() != screen)
+      placement.arrange(placement.hoverScreen(), false);
+    if (!placement.setHover(title, screen) || !placement.arrange(screen, true))
+      return {screen, placement.pins, true};
+  } else if (placement.hoverOwner() != title) {
+    return {};
+  }
+
+  const QJsonObject cursor = QJsonDocument::fromJson(
+      runForOutput(QStringLiteral("hyprctl"),
+                   {QStringLiteral("-j"), QStringLiteral("cursorpos")}).toUtf8()).object();
+  if (!cursor.contains(QStringLiteral("x")) || !cursor.contains(QStringLiteral("y")))
+    return {screen, placement.pins, true};
+  QVector<QRect> cards;
+  for (const auto &card : placement.column(screen))
+    cards.push_back(card.second.translated(screen.topLeft()));
+  const QPoint pointer(cursor.value(QStringLiteral("x")).toInt(),
+                        cursor.value(QStringLiteral("y")).toInt());
+  const bool outside = !pinStackHotZone(cards, screen).contains(pointer);
+  if (outside && mayClose) {
+    if (placement.arrange(screen, false)) {
+      placement.setHover({});
+      return {screen, placement.pins};
+    }
+  }
+  return {screen, placement.pins, true, outside};
 }
 
 class PinWindow final : public QWidget {
@@ -287,6 +471,7 @@ public:
     setWindowTitle(pinTitle());
     setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
     setAttribute(Qt::WA_ShowWithoutActivating);
+    setAttribute(Qt::WA_TranslucentBackground);
     // Fixed, not merely sized: min equal to max is the hint a compositor
     // honors when floating, and Hyprland floats an unresizable window on
     // its own instead of first stretching it into a tile.
@@ -296,6 +481,43 @@ public:
     dragWatchTimer_.setInterval(80);
     connect(&dragWatchTimer_, &QTimer::timeout, this,
             [this] { requestDragSnapshot(); });
+    stackWatchTimer_.setSingleShot(true);
+    stackWatchTimer_.setInterval(kStackWatchMs);
+    connect(&stackWatchTimer_, &QTimer::timeout, this,
+            [this] { requestStackWatch(); });
+    connect(&stackWatcher_, &QFutureWatcher<StackSnapshot>::finished, this,
+            [this] { finishStackWatch(); });
+    tiltAnimation_.setDuration(150);
+    tiltAnimation_.setEasingCurve(QEasingCurve::OutCubic);
+    connect(&tiltAnimation_, &QVariantAnimation::valueChanged, this,
+            [this](const QVariant &value) {
+      tilt_ = value.toReal();
+      updateCardMask();
+      update();
+    });
+    stackStateReloadTimer_.setSingleShot(true);
+    stackStateReloadTimer_.setInterval(20);
+    connect(&stackStateReloadTimer_, &QTimer::timeout, this, [this] { reloadStackState(); });
+    connect(&stackFiles_, &QFileSystemWatcher::directoryChanged, this,
+            [this] { stackStateReloadTimer_.start(); });
+    connect(&stackStateWatcher_, &QFutureWatcher<qreal>::finished, this, [this] {
+      stackStateQueryPending_ = false;
+      if (!closing_)
+        setTilt(hovered_ || dragWatchTimer_.isActive() ? 0.0 : stackStateWatcher_.result());
+      if (stackStateReloadPending_)
+        reloadStackState();
+    });
+    auto *runtime = new QFutureWatcher<QString>(this);
+    connect(runtime, &QFutureWatcher<QString>::finished, this, [this, runtime] {
+      const QString root = runtime->result();
+      runtime->deleteLater();
+      if (!root.isEmpty()) {
+        stackStatePath_ = QDir(root).filePath(QStringLiteral("pin-targets.json"));
+        stackFiles_.addPath(root);
+        reloadStackState();
+      }
+    });
+    runtime->setFuture(QtConcurrent::run(&pinPool(), [] { return secureRuntimeDirectory(); }));
     using DragPayload = QPair<QByteArray, QImage>;
     auto *payload = new QFutureWatcher<DragPayload>(this);
     connect(payload, &QFutureWatcher<DragPayload>::finished, this, [this, payload] {
@@ -317,6 +539,74 @@ public:
   void setPlacementSnapshot(const QRect &screen, const QVector<CompositorPin> &pins) {
     dragScreen_ = screen;
     cachedPins_ = pins;
+    if (hovered_)
+      openStack();
+  }
+
+  void openStack() {
+    stackOpenRequested_ = true;
+    stackOutside_.invalidate();
+    requestStackWatch();
+  }
+
+  void requestStackWatch() {
+    if (closing_ || dragScreen_.isEmpty() || stackQueryPending_)
+      return;
+    if (dragWatchTimer_.isActive() || finishRequested_ || snapPending_) {
+      stackWatchTimer_.start();
+      return;
+    }
+    stackQueryPending_ = true;
+    const bool opening = std::exchange(stackOpenRequested_, false);
+    const bool mayClose = !opening && stackOutside_.isValid() &&
+                          stackOutside_.elapsed() >= kStackCloseMs;
+    stackGeneration_ = snapGeneration_;
+    stackWatcher_.setFuture(QtConcurrent::run(&pinPool(),
+        [title = windowTitle(), screen = dragScreen_, opening, mayClose] {
+      return watchPinStack(title, screen, opening, mayClose);
+    }));
+  }
+
+  void finishStackWatch() {
+    const auto snapshot = stackWatcher_.result();
+    stackQueryPending_ = false;
+    if (closing_)
+      return;
+    if (stackGeneration_ == snapGeneration_ && !dragWatchTimer_.isActive() &&
+        !snapshot.pins.isEmpty())
+      cachedPins_ = snapshot.pins;
+    if (snapshot.outside) {
+      if (!stackOutside_.isValid())
+        stackOutside_.start();
+    } else {
+      stackOutside_.invalidate();
+    }
+    if (stackOpenRequested_)
+      requestStackWatch();
+    else if (snapshot.watching)
+      stackWatchTimer_.start();
+  }
+
+  void endStackDrag() {
+    snapPending_ = false;
+    static_cast<void>(QtConcurrent::run(&pinPool(),
+        [title = windowTitle(), screen = dragScreen_, origin = dragOriginScreen_,
+         free = dragFree_] {
+      PinPlacement placement;
+      if (!placement.ready())
+        return;
+      placement.endDrag(title);
+      if (free)
+        placement.setFree(title, *free);
+      if (placement.hoverOwner().isEmpty()) {
+        placement.arrange(screen, false);
+        if (origin != screen)
+          placement.arrange(origin, false);
+      }
+    }));
+    // Reclaim the hover watch even when the compositor never sent another
+    // enter after its move grab. A free pin does not join just by hovering.
+    openStack();
   }
 
   void requestDragSnapshot() {
@@ -379,17 +669,27 @@ public:
   [[nodiscard]] bool hasPinLock() const { return snapshotFile_.isLocked(); }
 
 protected:
+  void resizeEvent(QResizeEvent *event) override {
+    QWidget::resizeEvent(event);
+    updateCardMask();
+  }
+
   void paintEvent(QPaintEvent *) override {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing, true);
     painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
 
-    // The compositor draws the border and the shadow around a floating
-    // window, so the picture is the whole window: a mat of our own would be
-    // a second frame inside the first. Cover-cropped and anchored to the
-    // top rather than the middle, because a capture's top is its title bar,
-    // its tabs, its heading; a tall page cropped to its middle is a slab of
-    // body text that could be any of them.
+    // Paint the frame with the image so an idle card can lean without an
+    // upright compositor border around it. Keep the existing window bounds
+    // for packing and dragging; transparent corners take no pointer input.
+    painter.setCompositionMode(QPainter::CompositionMode_Source);
+    painter.fillRect(rect(), Qt::transparent);
+    painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
+    painter.save();
+    painter.setTransform(pinCardTransform(size(), tilt_));
+    const QPainterPath card = cardPath();
+    painter.save();
+    painter.setClipPath(card);
     painter.fillRect(rect(), QColor(18, 18, 22));
     if (!image_.isNull()) {
       const qreal scale =
@@ -399,6 +699,12 @@ protected:
                           width() / scale, height() / scale);
       painter.drawImage(QRectF(rect()), image_, source);
     }
+    painter.restore();
+    painter.setBrush(Qt::NoBrush);
+    painter.setPen(QPen(hovered_ ? QColor(140, 179, 209, 210)
+                                : QColor(255, 255, 255, 75), 1.5));
+    painter.drawPath(card);
+    painter.restore();
     if (!toast_.isEmpty())
       paintToast(painter);
     if (!hovered_)
@@ -474,6 +780,7 @@ protected:
   void beginDragWatch(bool compositorDrag = false) {
     if (compositorDrag && dragWatchTimer_.isActive())
       return;
+    setTilt(0.0, false);
     ++snapGeneration_;
     dragStartRect_ = ownCompositorRect();
     if (dragStartRect_.isNull())
@@ -482,10 +789,11 @@ protected:
     static_cast<void>(QtConcurrent::run(&pinPool(), [title] {
       PinPlacement placement;
       if (placement.ready())
-        placement.release(title);
+        placement.beginDrag(title);
     }));
     dragOriginScreen_ = dragScreen_;
     compositorDrag_ = compositorDrag;
+    dragFree_.reset();
     dragButtonDown_ = std::nullopt;
     finishRequested_ = false;
 
@@ -516,6 +824,7 @@ protected:
       if (spreadActive_)
         compactPinColumn(windowTitle(), dragScreen_);
       spreadActive_ = false;
+      endStackDrag();
       return;
     }
     dragMoved_ = dragMoved_ || rect != dragStartRect_;
@@ -620,6 +929,7 @@ protected:
     // frame behind it.
     const QRect rect = ownCompositorRect();
     if (!dragMoved_ && rect == dragStartRect_) {
+      endStackDrag();
       return;
     }
     QRect visible = rect;
@@ -636,12 +946,15 @@ protected:
     }
     if (!visible.isNull())
       previewInsertion(visible);
+    dragFree_ = snapSpot_.isNull();
     if (!snapSpot_.isNull()) {
       requestSnap(snapSpot_, ++snapGeneration_);
     } else {
       if (visible != rect)
         requestSnap(visible, ++snapGeneration_);
       compactPinColumn(windowTitle(), dragScreen_);
+      if (visible == rect)
+        endStackDrag();
     }
     spreadActive_ = false;
   }
@@ -649,6 +962,7 @@ protected:
   void requestSnap(const QRect &target, quint64 generation, int attempt = 0) {
     if (closing_ || generation != snapGeneration_)
       return;
+    snapPending_ = true;
     auto *watcher = new QFutureWatcher<bool>(this);
     connect(watcher, &QFutureWatcher<bool>::finished, this,
             [this, watcher, target, generation, attempt] {
@@ -661,6 +975,7 @@ protected:
           if (pin.title == windowTitle())
             pin.rect = target;
         }
+        endStackDrag();
         return;
       }
       if (attempt < 2) {
@@ -670,6 +985,7 @@ protected:
       } else {
         compactPinColumn(windowTitle(), dragScreen_);
         showToast(QStringLiteral("Could not position pinned capture"));
+        endStackDrag();
       }
     });
     watcher->setFuture(movePin(windowTitle(), target));
@@ -685,7 +1001,7 @@ protected:
     for (const CompositorPin &pin : cachedPins_) {
       if (pin.title == windowTitle() || !dragScreen_.intersects(pin.rect))
         continue;
-      if (pinInColumn(pin.rect.translated(-dragScreen_.topLeft()), dragScreen_.size(), qRound(kCornerMargin), kPinGap))
+      if (!pin.free && pinInColumn(pin.rect.translated(-dragScreen_.topLeft()), dragScreen_.size(), qRound(kCornerMargin), kPinGap))
         column.push_back({pin.title, pin.rect.translated(-dragScreen_.topLeft())});
       else
         blockers.push_back(pin.rect.translated(-dragScreen_.topLeft()));
@@ -806,6 +1122,12 @@ protected:
   // The six-dot control starts a file drag. Its optional PNG and thumbnail
   // payloads are prepared on a worker so pointer input never encodes images.
   void beginFileDrag() {
+    dragFree_.reset();
+    static_cast<void>(QtConcurrent::run(&pinPool(), [title = windowTitle()] {
+      PinPlacement placement;
+      if (placement.ready())
+        placement.beginDrag(title);
+    }));
     QMimeData *mime = new QMimeData;
     const QList<QUrl> urls{QUrl::fromLocalFile(path_)};
     mime->setUrls(urls);
@@ -817,6 +1139,7 @@ protected:
     if (!dragPreview_.isNull())
       drag.setPixmap(QPixmap::fromImage(dragPreview_));
     drag.exec(Qt::CopyAction | Qt::MoveAction);
+    endStackDrag();
   }
 
   void wheelEvent(QWheelEvent *event) override {
@@ -880,18 +1203,34 @@ protected:
 
   void closeEvent(QCloseEvent *event) override {
     closing_ = true;
+    stackStateReloadTimer_.stop();
+    tiltAnimation_.stop();
     dragWatchTimer_.stop();
+    stackWatchTimer_.stop();
     closeButtonWatch();
     // The compositor may still list this window while it closes, so it is
     // excluded by name rather than trusted to be gone.
-    compactPinColumn(windowTitle(), dragScreen_);
+    static_cast<void>(QtConcurrent::run(&pinPool(),
+        [title = windowTitle(), screen = dragScreen_] {
+      PinPlacement placement;
+      if (!placement.ready())
+        return;
+      placement.endDrag(title);
+      if (placement.hoverOwner() == title)
+        placement.setHover({});
+      placement.release(title);
+      placement.arrange(screen, !placement.hoverOwner().isEmpty() &&
+                                 placement.hoverScreen() == screen, title);
+    }));
     QWidget::closeEvent(event);
   }
 
   void enterEvent(QEnterEvent *event) override {
     pointerWokeDuringWatch();
     hovered_ = true;
+    setTilt(0.0, false);
     watchCompositorDrag(QGuiApplication::keyboardModifiers());
+    openStack();
     hoveredControl_ = controlRectAt(event->position());
     setCursor(hoveredControl_ >= 0 ? Qt::PointingHandCursor : Qt::ArrowCursor);
     update();
@@ -901,10 +1240,59 @@ protected:
     hovered_ = false;
     hoveredControl_ = -1;
     setCursor(Qt::ArrowCursor);
+    reloadStackState();
     update();
   }
 
 private:
+  QPainterPath cardPath() const {
+    QPainterPath path;
+    path.addRoundedRect(QRectF(rect()).adjusted(1, 1, -1, -1), 7, 7);
+    return path;
+  }
+
+  void updateCardMask() {
+    if (QWindow *handle = windowHandle()) {
+      const QPainterPath card = pinCardTransform(size(), tilt_).map(cardPath());
+      handle->setMask(QRegion(card.toFillPolygon().toPolygon()));
+    }
+  }
+
+  void setTilt(qreal degrees, bool animate = true) {
+    if (animate && qFuzzyCompare(tiltTarget_ + 1.0, degrees + 1.0))
+      return;
+    tiltTarget_ = degrees;
+    tiltAnimation_.stop();
+    if (!animate) {
+      tilt_ = degrees;
+      updateCardMask();
+      update();
+      return;
+    }
+    tiltAnimation_.setStartValue(tilt_);
+    tiltAnimation_.setEndValue(degrees);
+    tiltAnimation_.start();
+  }
+
+  void reloadStackState() {
+    if (closing_ || stackStatePath_.isEmpty())
+      return;
+    if (stackStateQueryPending_) {
+      stackStateReloadPending_ = true;
+      return;
+    }
+    stackStateQueryPending_ = true;
+    stackStateReloadPending_ = false;
+    stackStateWatcher_.setFuture(QtConcurrent::run(&pinPool(),
+        [path = stackStatePath_, title = windowTitle()] {
+      QFile file(path);
+      if (!file.open(QIODevice::ReadOnly))
+        return 0.0;
+      const auto state = QJsonDocument::fromJson(file.readAll()).object();
+      return state.value(QStringLiteral("tilts")).toObject().value(title).toDouble();
+    }));
+  }
+
   void showToast(QString message) {
     toast_ = std::move(message);
     update();
@@ -945,6 +1333,15 @@ private:
   }
 
   QImage image_;
+  qreal tilt_ = 0.0;
+  qreal tiltTarget_ = 0.0;
+  QVariantAnimation tiltAnimation_;
+  QFileSystemWatcher stackFiles_;
+  QTimer stackStateReloadTimer_;
+  QFutureWatcher<qreal> stackStateWatcher_;
+  QString stackStatePath_;
+  bool stackStateQueryPending_ = false;
+  bool stackStateReloadPending_ = false;
   QByteArray dragPng_;
   QImage dragPreview_;
   bool actionPending_ = false;
@@ -957,7 +1354,15 @@ private:
   bool finishRequested_ = false;
   bool compositorDrag_ = false;
   std::optional<bool> dragButtonDown_;
+  std::optional<bool> dragFree_;
   QTimer dragWatchTimer_;
+  QTimer stackWatchTimer_;
+  QFutureWatcher<StackSnapshot> stackWatcher_;
+  quint64 stackGeneration_ = 0;
+  QElapsedTimer stackOutside_;
+  bool stackQueryPending_ = false;
+  bool stackOpenRequested_ = false;
+  bool snapPending_ = false;
   QRect dragStartRect_;
   QRect dragOriginScreen_;
   QRect dragPreviousRect_;
@@ -1024,18 +1429,15 @@ int runPinnedCapture(const QString &path) {
         return {};
       if (!own->pinned && !hyprDispatch(pinPinDispatch(own->address)))
         return {};
-      QVector<QRect> blockers;
-      for (const CompositorPin &pin : placement.pins) {
-        if (pin.title != title && screen.intersects(pin.rect))
-          blockers.push_back(pin.rect.translated(-screen.topLeft()));
-      }
-      const auto at = pinPackedPosition(blockers, screen.size(), frame,
-                                        kPinGap, qRound(kCornerMargin));
-      if (at) {
-        own->rect = QRect(*at + screen.topLeft(), frame);
-        if (!placement.move(title, own->rect))
-          return {};
-      }
+      // A new capture is the front of the idle deck. Keep an already-open
+      // fan exposed, and never rearrange pins during somebody else's drag.
+      if (!placement.dragging().isEmpty())
+        return {};
+      own->rect.setSize(frame);
+      const bool expanded = !placement.hoverOwner().isEmpty() &&
+                             placement.hoverScreen() == screen;
+      if (!placement.arrange(screen, expanded, {}, title))
+        return {};
       return {screen, placement.pins};
     }));
   });
@@ -1071,7 +1473,8 @@ int runPinnedCapture(const QString &path) {
          QStringLiteral("hl.window_rule({ name = \"omasnap-pins\", "
                         "match = { class = \"^omasnap$\", title = \"^omasnap-pin [0-9]+$\" }, "
                         "float = true, pin = true, no_initial_focus = true, "
-                        "no_follow_mouse = false })")}, &ok);
+                        "no_follow_mouse = false, border_size = 0, rounding = 0, "
+                        "no_shadow = true, no_blur = true })")}, &ok);
     return ok && !output.contains(QStringLiteral("error"), Qt::CaseInsensitive);
   };
   auto *rules = new QFutureWatcher<bool>(&window);

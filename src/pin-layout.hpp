@@ -9,6 +9,7 @@
 #include <QSize>
 #include <QString>
 #include <QVector>
+#include <QTransform>
 
 /// The frame a pin fills: the display's aspect at a fixed width, clamped
 /// so a tall pivot or an ultrawide still yields a pin rather than a line;
@@ -31,6 +32,24 @@
                                        const QSize &screenSize,
                                        const QSize &frame, int gap,
                                        int margin);
+
+/// Lay out a bottom-to-top ordered deck. Idle cards overlap by all but a
+/// twelve-pixel lip; hovering exposes every card. Both layouts keep the same
+/// front card anchored, wrap into columns and leave freely placed pins alone.
+/// Empty means the complete deck cannot fit; callers must not move a subset.
+[[nodiscard]] QVector<QPair<QString, QRect>>
+pinStackLayout(const QVector<QPair<QString, QRect>> &ordered,
+               const QVector<QRect> &blockers, const QSize &screenSize,
+               int gap, int margin, bool expanded);
+
+/// A restrained, alternating lean beneath a straight front card.
+[[nodiscard]] qreal pinStackTilt(int depth, bool expanded);
+/// Rotate the painted card inside its existing window, fitting every corner.
+[[nodiscard]] QTransform pinCardTransform(const QSize &frame, qreal degrees);
+
+/// Includes the gaps between exposed cards so crossing a gap keeps them open.
+[[nodiscard]] QRect pinStackHotZone(const QVector<QRect> &cards,
+                                   const QRect &screen);
 
 /// What inserting a dragged pin into the column would look like right now.
 /// `index` is -1 while the drag touches no part of the stack; any overlap
@@ -59,6 +78,7 @@ pinInsertionPlan(QVector<QPair<QString, QRect>> column,
 [[nodiscard]] QString pinFloatDispatch(const QString &address);
 [[nodiscard]] QString pinPinDispatch(const QString &address);
 [[nodiscard]] QString pinMoveDispatch(const QString &address, int x, int y);
+[[nodiscard]] QString pinRaiseDispatch(const QString &address);
 /// Global logical geometry, including scale and quarter-turn transforms.
 [[nodiscard]] QRect pinMonitorGeometry(const QJsonObject &monitor);
 /// Global logical geometry excluding reserved space for bars on any edge.

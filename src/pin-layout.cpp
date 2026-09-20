@@ -2,6 +2,10 @@
 #include "pin-layout.hpp"
 
 #include <QJsonArray>
+#include <QTransform>
+#include <QtNumeric>
+#include <QtTypes>
+#include <QtMath>
 
 #include <algorithm>
 #include <cmath>
@@ -55,6 +59,81 @@ std::optional<QPoint> pinPackedPosition(const QVector<QRect> &blockers,
     x -= frame.width() + gap;
   }
   return std::nullopt;
+}
+
+QVector<QPair<QString, QRect>>
+pinStackLayout(const QVector<QPair<QString, QRect>> &ordered,
+               const QVector<QRect> &blockers, const QSize &screenSize,
+               int gap, int margin, bool expanded) {
+  QVector<QRect> occupied = blockers;
+  QVector<QPair<QString, QRect>> layout;
+  for (const auto &[title, rect] : ordered) {
+    const auto at = pinPackedPosition(occupied, screenSize, rect.size(), gap, margin);
+    if (!at)
+      return {};
+    const QRect seat(*at, rect.size());
+    layout.push_back({title, seat});
+    occupied.push_back(seat);
+  }
+  if (expanded)
+    return layout;
+
+  // Compress each column independently, preserving order and the front
+  // card's position. A free pin in the deck's footprint keeps that column
+  // exposed instead of covering the free pin when it folds.
+  for (qsizetype first = 0; first < layout.size();) {
+    qsizetype end = first + 1;
+    while (end < layout.size() &&
+           layout.at(end).second.right() == layout.at(first).second.right())
+      ++end;
+    QVector<QRect> deck;
+    bool blocked = false;
+    for (qsizetype index = first; index < end; ++index) {
+      QRect card = layout.at(index).second;
+      card.moveBottom(layout.at(first).second.bottom() -
+                       static_cast<int>(12 * (index - first)));
+      for (const QRect &blocker : blockers)
+        blocked = blocked || card.intersects(blocker);
+      deck.push_back(card);
+    }
+    if (!blocked) {
+      for (qsizetype index = first; index < end; ++index)
+        layout[index].second = deck.at(index - first);
+    }
+    first = end;
+  }
+  return layout;
+}
+
+qreal pinStackTilt(int depth, bool expanded) {
+  if (expanded || depth <= 0)
+    return 0.0;
+  return (depth % 2 == 0 ? 1.0 : -1.0) * std::min(3.0, 1.0 + depth);
+}
+
+QTransform pinCardTransform(const QSize &frame, qreal degrees) {
+  if (frame.isEmpty() || qFuzzyIsNull(degrees))
+    return {};
+  const qreal radians = qDegreesToRadians(degrees);
+  const qreal sine = std::abs(std::sin(radians));
+  const qreal cosine = std::abs(std::cos(radians));
+  const qreal width = std::max(1, frame.width() - 2);
+  const qreal height = std::max(1, frame.height() - 2);
+  const qreal scale = std::min(width / (width * cosine + height * sine),
+                              height / (height * cosine + width * sine));
+  QTransform transform;
+  transform.translate(frame.width() / 2.0, frame.height() / 2.0);
+  transform.rotate(degrees);
+  transform.scale(scale, scale);
+  transform.translate(-frame.width() / 2.0, -frame.height() / 2.0);
+  return transform;
+}
+
+QRect pinStackHotZone(const QVector<QRect> &cards, const QRect &screen) {
+  QRect zone;
+  for (const QRect &card : cards)
+    zone |= card;
+  return zone.isEmpty() ? QRect() : zone.adjusted(-12, -12, 12, 12).intersected(screen);
 }
 
 PinInsertionPlan pinInsertionPlan(QVector<QPair<QString, QRect>> column,
@@ -190,6 +269,11 @@ QString pinMoveDispatch(const QString &address, int x, int y) {
              "hl.dsp.window.move({ x = %1, y = %2, relative = false, %3 })")
       .arg(x)
       .arg(y)
+      .arg(windowSelector(address));
+}
+
+QString pinRaiseDispatch(const QString &address) {
+  return QStringLiteral("hl.dsp.window.alter_zorder({ mode = \"top\", %1 })")
       .arg(windowSelector(address));
 }
 

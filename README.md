@@ -52,6 +52,8 @@ previewing, copying again, dragging into another app, or opening the editor on d
   live preview and dashed seam marker while dragging; annotations shift to follow.
 - Pin a finished capture as a bottom-right floating compositor window, launched
   from the same `omasnap` executable and visible on every workspace.
+  Pins form a compact, gently tilted deck while idle; hover to straighten
+  and fan them out.
   Dropping a pin partly off-screen or underneath a bar brings it fully back
   inside the monitor where the drag started, with the same 14-pixel gap as
   the stack from any screen edge or reserved bar area.
@@ -439,20 +441,27 @@ into a scrolling capture. Explicit `region`, `windows`, `fullscreen`, and
 
 `P` renders the current capture, writes it to a `pin-<pid>-<n>-<random>.png` under
 the runtime snapshot directory, and launches the same `omasnap` executable in
-detached pin mode. Hyprland floats and pins each window on every workspace;
-its border and shadow come from the compositor. Pins pack upward from the focused
-monitor's bottom-right corner, then into further columns. Placement accounts for
+detached pin mode. Hyprland floats and pins each window on every workspace.
+Idle pins overlap in a compact deck at the focused monitor's bottom-right
+corner, newest in front. The front card stays straight; the cards behind it
+alternate a gentle 2–3° lean. Omasnap paints the rounded frames with the images
+so their edges tilt together, with transparent corners that take no input.
+Hover to straighten and fan them upward into fully exposed cards, wrapping into
+further columns when needed. The front card stays anchored; moving between cards keeps the fan
+open, and leaving folds it after a short delay. Placement accounts for
 monitor origins, scaling and rotation, respecting bars on any edge and leaving
-a 14-pixel gap inside the usable area. It reserves each new target while the
-compositor animates it. If no on-screen slot fits, automatic packing leaves the
-window where the compositor placed it.
+a 14-pixel gap inside the usable area. It reserves each new target while the compositor
+animates it. If no on-screen slot fits, automatic packing leaves the window
+where the compositor placed it.
 
 The preview is 200 logical pixels wide with the display's aspect ratio (height
 clamped to 50–400 pixels). It fills that frame with a top-anchored cover crop;
 copy, edit and drag-out still use the complete full-resolution image. Drag the
 image background, or use `Super`+left-drag, to move a pin. Dragging over the stack
-opens an insertion gap, and releasing snaps it into that gap. Moving or closing
-a stacked pin packs the remaining column down.
+opens an insertion gap,
+and releasing snaps it into that gap. The fan stays open during a drag. Moving or
+closing a stacked pin closes the gap; pins dragged entirely clear of the stack
+stay freely placed and are left alone when the stack folds or opens.
 A drop partly outside the usable area returns fully
 inside the monitor where the drag started, keeping the same 14-pixel edge gap.
 

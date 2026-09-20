@@ -22,6 +22,9 @@ earlier development is recorded in the [commit history](https://github.com/omaco
   to annotate before output; `--copy`/`--save` bypass the pin.
 - Pinned captures are floating compositor windows, with automatic packing
   and drag-to-stack placement, without taking focus when they appear.
+- Fold idle pins into a compact deck with a gentle alternating tilt; hover to
+  straighten and fan them into exposed cards, keeping the fan open between
+  cards and throughout a drag.
 - Default capture selection accepts a region drag, a window click, or a
   click on open space for the focused monitor.
 - Reduce pointer repaint work on large displays and detect highlighter text

@@ -5,6 +5,10 @@
 #include "cli-path.hpp"
 #include <QCommandLineParser>
 #include <QJsonArray>
+#include <QRectF>
+#include <QTransform>
+#include <QtTypes>
+#include <cmath>
 
 #include <QSet>
 
@@ -128,6 +132,100 @@ bool runPinLayoutSmoke(QString &error) {
 
   const QSize screen(400, 300);
   const QSize pin(100, 80);
+
+  const QVector<QPair<QString, QRect>> deck{
+      {QStringLiteral("newest"), QRect(QPoint(), pin)},
+      {QStringLiteral("middle"), QRect(QPoint(), pin)},
+      {QStringLiteral("oldest"), QRect(QPoint(), pin)}};
+  const auto folded = pinStackLayout(deck, {}, screen, 10, 14, false);
+  const auto fanned = pinStackLayout(deck, {}, screen, 10, 14, true);
+  for (int depth = 0; depth < 20; ++depth) {
+    const qreal tilt = pinStackTilt(depth, false);
+    if (pinStackTilt(depth, true) != 0.0 || (depth == 0 && tilt != 0.0) ||
+        (depth > 0 && (std::abs(tilt) > 3.0 ||
+                       (depth % 2 == 0 ? tilt <= 0.0 : tilt >= 0.0)))) {
+      error = QStringLiteral("The pin deck tilt did not stay bounded and alternate beneath a straight front card");
+      return false;
+    }
+  }
+  for (const QSize frame : {QSize(200, 50), QSize(200, 113), QSize(200, 400)}) {
+    const QRectF card = QRectF(QPointF(), frame).adjusted(1, 1, -1, -1);
+    for (const qreal tilt : {-3.0, -2.0, 0.0, 2.0, 3.0}) {
+      const QTransform transform = pinCardTransform(frame, tilt);
+      if (!QRectF(QPointF(), frame).contains(transform.mapRect(card)) ||
+          (tilt == 0.0 && !transform.isIdentity())) {
+        error = QStringLiteral("A tilted pin clips a corner or resizes an upright card");
+        return false;
+      }
+    }
+  }
+  if (folded.size() != 3 || fanned.size() != 3 ||
+      folded.at(0).second != fanned.at(0).second ||
+      folded.at(0).second.top() - folded.at(1).second.top() != 12 ||
+      folded.at(1).second.top() - folded.at(2).second.top() != 12 ||
+      folded.at(0).second.bottom() != screen.height() - 15) {
+    error = QStringLiteral("The idle pin deck moved its front card or lost its compact lips");
+    return false;
+  }
+  for (qsizetype index = 0; index < fanned.size(); ++index) {
+    if (fanned.at(index).first != deck.at(index).first ||
+        !QRect(QPoint(14, 14), screen - QSize(28, 28)).contains(fanned.at(index).second)) {
+      error = QStringLiteral("The pin fan changed card order or crossed an edge inset");
+      return false;
+    }
+    for (qsizetype other = index + 1; other < fanned.size(); ++other) {
+      if (fanned.at(index).second.intersects(fanned.at(other).second)) {
+        error = QStringLiteral("The pin fan left a card covered");
+        return false;
+      }
+    }
+  }
+  if (pinStackLayout(fanned, {}, screen, 10, 14, false) != folded ||
+      pinStackLayout(folded, {}, screen, 10, 14, true) != fanned) {
+    error = QStringLiteral("Opening and closing the pin fan drifted its layout");
+    return false;
+  }
+  auto wrappedDeck = deck;
+  wrappedDeck.push_back({QStringLiteral("fourth"), QRect(QPoint(), pin)});
+  const auto wrappedFan = pinStackLayout(wrappedDeck, {}, screen, 10, 14, true);
+  const auto wrappedFold = pinStackLayout(wrappedDeck, {}, screen, 10, 14, false);
+  if (wrappedFan.size() != 4 || wrappedFold.size() != 4 ||
+      wrappedFan.at(3).second != QRect(176, 206, 100, 80) ||
+      wrappedFold.at(3).second != wrappedFan.at(3).second) {
+    error = QStringLiteral("The pin deck did not keep wrapped columns on screen");
+    return false;
+  }
+  const QVector<QRect> freePins{QRect(260, 195, 40, 20)};
+  for (const bool expanded : {false, true}) {
+    const auto besideFree = pinStackLayout(deck, freePins, screen, 10, 14, expanded);
+    if (besideFree.size() != 3) {
+      error = QStringLiteral("A free pin prevented an otherwise fitting deck");
+      return false;
+    }
+    for (const auto &card : besideFree) {
+      if (card.second.intersects(freePins.constFirst())) {
+        error = QStringLiteral("Folding or fanning a deck covered a freely placed pin");
+        return false;
+      }
+    }
+  }
+  const QRect workArea(-400, 26, screen.width(), screen.height());
+  QVector<QRect> globalFan;
+  for (const auto &card : fanned)
+    globalFan.push_back(card.second.translated(workArea.topLeft()));
+  const QRect hotZone = pinStackHotZone(globalFan, workArea);
+  const QPoint gapPoint(globalFan.at(0).center().x(), globalFan.at(0).top() - 5);
+  if (!hotZone.contains(gapPoint) || !workArea.contains(hotZone) ||
+      hotZone.contains(QPoint(workArea.left() + 20, workArea.top() + 20)) ||
+      !pinStackHotZone({}, workArea).isEmpty()) {
+    error = QStringLiteral("The pin fan hover zone lost a gap or covered unrelated desktop");
+    return false;
+  }
+  if (!pinStackLayout(deck, {}, QSize(90, 70), 10, 14, false).isEmpty() ||
+      !pinStackLayout(deck, {}, QSize(120, 100), 10, 14, true).isEmpty()) {
+    error = QStringLiteral("An overflowing deck returned a partial layout");
+    return false;
+  }
 
   // An empty corner takes the first pin snug against the margins; the next
   // ones pack one gap above whatever is there, whatever its size, and a

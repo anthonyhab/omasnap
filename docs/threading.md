@@ -149,6 +149,19 @@ Super is held over a pin. Motion during that drag is not mistaken for release;
 the mouse release or releasing Super completes placement. There is no permanent
 polling timer on idle pins and no global shortcut registration.
 
+Hovering a deck starts a single fan watch, owned by the last pin entered. Its
+worker samples the pointer while the fan is open, including the gaps between
+windows, and stops when the deck folds. The runtime placement transaction shares
+hover ownership and drag state so other pin processes cannot fold a live drag.
+It also records freely placed pins, which must stay free even when aligned with
+the screen edge. Fan moves use compositor animations and preserve the native
+windows; folding restores their stacking order without a focus dispatch.
+The same transaction publishes each card's tilt. A filesystem watcher triggers
+a small worker read when that state changes; it adds no idle polling. The UI
+animates the painted card and its input region inside the existing window bounds.
+Pin frames are drawn with their images so the outline can rotate too; the runtime
+pin rule disables the compositor's rectangular border, shadow and background blur.
+
 ## Pen smoothing budget
 
 Release-time smoothing bounds the iterative RDP pass to 32,768 point-to-segment
