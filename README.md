@@ -9,7 +9,8 @@ resizable vector layers and preserves the monitor's native pixels on scaled disp
 
 Select a capture and it copies straight to the clipboard, with a floating preview for
 copying again, dragging into another app, or opening the editor on demand.
-The preview fades after 10 seconds; click its pin button or press `Ctrl+P` to keep it.
+The preview fades after 10 seconds unless you interact with it. Clicking, dragging,
+scrolling over it, or using its controls keeps it on screen, as does `Ctrl+P`.
 
 [![Looping Omasnap demonstration](assets/omasnap.gif)](assets/omasnap.mp4)
 
@@ -20,7 +21,8 @@ The preview fades after 10 seconds; click its pin button or press `Ctrl+P` to ke
   window, fullscreen, and scrolling-region modes remain available.
 - Fresh captures copy immediately and show a floating preview for 10 seconds
   without taking keyboard focus. Hover for Pin, Edit, Copy, file drag, and Close
-  controls. The pin button or `Ctrl+P` keeps the shot on screen.
+  controls. Interacting with the shot keeps it on screen, as does the pin button
+  or `Ctrl+P`.
 - A pointer-side readout that turns any drag into a ruler: the pointer position
   while the crosshair is idle, then the frame size in native export pixels while a
   region, a hovered window, or a crop handle is being sized.
@@ -444,10 +446,11 @@ into a scrolling capture. Explicit `region`, `windows`, `fullscreen`, and
 ### Capture previews and pins
 
 Normal captures show a preview that fades after 10 seconds of idle time, replacing
-the completion notification. Hovering the stack or interacting with a preview
-pauses the countdown. Click the pin button or press `Ctrl+P` on a focused preview
-to keep it until you close it. Kept shots show a highlighted pin icon even when
-the other controls are hidden. Unpinning starts a fresh 10-second countdown.
+the completion notification. Hovering the stack pauses the countdown. Clicking,
+dragging (including Super+drag), scrolling over a preview, or using its controls
+keeps that shot until you close it. The pin button or `Ctrl+P` on a focused preview
+also keeps it. Kept shots show a highlighted pin icon even when the other controls
+are hidden. Unpinning starts a fresh 10-second countdown.
 New captures always go in front of the existing stack, including kept shots.
 
 In the editor, `Ctrl+P` or `P` renders a capture that stays pinned. It writes a

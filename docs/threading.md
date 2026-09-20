@@ -166,9 +166,10 @@ Pin frames are drawn with their images so the outline can rotate too; the runtim
 pin rule disables the compositor's rectangular border, shadow and background blur.
 
 Normal previews use a one-shot ten-second timer and a short paint-opacity fade.
-Explicit pins disable that timer. Hover, drag and action state pause the remaining
-time; the existing shared-state watcher also pauses previews while their stack is
-being browsed. Expiry compacts the stack on the placement worker and never issues
+Explicit pins and direct interaction disable that timer. Hover and shared stack
+activity pause the remaining time; a click, drag, wheel event or action keeps only
+the affected preview. Unpinning restarts its countdown, paused until ongoing
+interaction finishes. Expiry compacts the stack on the placement worker and never issues
 a focus transfer. No extra compositor polling or process is needed for the fade.
 
 ## Pen smoothing budget

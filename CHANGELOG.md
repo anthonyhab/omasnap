@@ -24,7 +24,8 @@ earlier development is recorded in the [commit history](https://github.com/omaco
   to annotate before output; `--copy`/`--save` bypass the pin.
 - Fade normal capture previews after 10 seconds of idle time. The pin button
   or `Ctrl+P` keeps a shot on screen with a pin icon; new shots stay in front.
-  Hovering or interacting pauses expiry, and explicit editor pins stay until closed.
+  Hovering pauses expiry; clicking, dragging, scrolling over a preview, or using
+  its controls keeps it until closed. Explicit editor pins also stay until closed.
 - Pinned captures are floating compositor windows, with automatic packing
   and drag-to-stack placement, without taking focus when they appear.
 - Fold idle pins into a compact deck with a gentle alternating tilt; hover to

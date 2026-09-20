@@ -5,7 +5,7 @@
 #include <QVariantAnimation>
 
 /// A preview gets ten seconds of idle time, then a short fade. Keeping it
-/// cancels expiry; hovering or using its controls pauses the remaining time.
+/// cancels expiry; browsing the stack pauses the remaining time.
 class PinExpiry final : public QObject {
   Q_OBJECT
 public:
