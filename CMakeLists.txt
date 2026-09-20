@@ -167,6 +167,8 @@ qt_add_executable(omasnap-smoke
   tests/surface-capture-smoke.hpp
   tests/pin-lifecycle-smoke.cpp
   tests/pin-lifecycle-smoke.hpp
+  tests/pin-interaction-smoke.cpp
+  tests/pin-interaction-smoke.hpp
   tests/pin-layout-smoke.cpp
   tests/pin-layout-smoke.hpp
   src/stitch.cpp
@@ -205,7 +207,7 @@ install(FILES assets/OFL.txt
   DESTINATION "${CMAKE_INSTALL_DATADIR}/licenses/omasnap"
   RENAME Neucha-OFL.txt
 )
-install(FILES assets/JetBrainsMono-OFL.txt assets/Inter-OFL.txt
+install(FILES assets/JetBrainsMono-OFL.txt assets/Inter-OFL.txt assets/Lucide-ISC.txt
   DESTINATION "${CMAKE_INSTALL_DATADIR}/licenses/omasnap"
 )
 install(FILES omasnap.desktop
