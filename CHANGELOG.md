@@ -38,6 +38,8 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 
 - Support hovered-pin shortcuts: X / Super+W to close, A / E to annotate,
   C to copy the image, and L / F to copy its file path.
+- Focus the next pin when closing one, so repeated X presses work without
+  another mouse movement.
 - Give Super+left-drag the same pin stacking and drop recovery as an image drag.
 - Bring off-screen pin drops back inside the monitor where the drag started,
   using the stack's 14-pixel gap and allowing for bars on any edge.

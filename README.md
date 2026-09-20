@@ -473,6 +473,10 @@ processes.
 Hover the pin to reveal its controls and use its keyboard shortcuts; the cursor
 becomes a pointing hand over each button. Pins follow normal mouse focus while
 hovered and keep focus with the current app when first created.
+Closing an active or hovered pin focuses the next pin on that monitor, starting
+with the front of the remaining stack, so repeated `X` presses dismiss them
+without needing another mouse movement. Opening a pin for annotation keeps
+focus with the editor.
 
 | Input on a pin | Action |
 |---|---|
@@ -481,7 +485,7 @@ hovered and keep focus with the current app when first created.
 | Copy button, `C` while hovered, `Ctrl+C` | Copy the full-resolution PNG |
 | Top-left six-dot drag handle | Drag the PNG into a file-capable drop target |
 | Wheel | Keep the fixed preview size |
-| Close button, `X` / `Super+W` while hovered, `Esc`, middle-click | Close |
+| Close button, `X` / `Super+W` while focused, `Esc`, middle-click | Close and focus the next pin |
 
 Image and path copying use `wl-copy` rather than `QClipboard`, so clipboard data remains
 available after the pin is closed. Hyprland placement uses runtime dispatches and

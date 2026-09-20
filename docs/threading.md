@@ -156,6 +156,8 @@ hover ownership and drag state so other pin processes cannot fold a live drag.
 It also records freely placed pins, which must stay free even when aligned with
 the screen edge. Fan moves use compositor animations and preserve the native
 windows; folding restores their stacking order without a focus dispatch.
+Closing an active pin compacts the deck and focuses the next pin on the same
+monitor in that worker transaction. Editor handoffs skip the focus transfer.
 The same transaction publishes each card's tilt. A filesystem watcher triggers
 a small worker read when that state changes; it adds no idle polling. The UI
 animates the painted card and its input region inside the existing window bounds.

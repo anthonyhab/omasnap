@@ -375,6 +375,20 @@ public:
     }
     return true;
   }
+  void focusNext(const QString &excluded, const QRect &screen) const {
+    const auto ordered = column(screen, excluded);
+    const CompositorPin *next = nullptr;
+    for (const CompositorPin &pin : pins) {
+      if (pin.title == excluded || !screen.contains(pin.rect.center()))
+        continue;
+      if (!ordered.isEmpty() && pin.title != ordered.front().first)
+        continue;
+      if (!next || pin.rect.bottom() > next->rect.bottom())
+        next = &pin;
+    }
+    if (next)
+      hyprDispatch(pinFocusDispatch(next->address));
+  }
   QVector<CompositorPin> pins;
 private:
   bool save() {
@@ -1054,6 +1068,7 @@ protected:
         showToast(error);
       else if (reopening) {
         snapshotFile_.preserveForEditor();
+        editorHandoff_ = true;
         close();
       } else {
         showToast(message);
@@ -1158,12 +1173,16 @@ protected:
       event->accept();
       return;
     }
+    // Closing transfers keyboard focus to the next pin, which need not have
+    // received a pointer-enter event before the next key press arrives.
+    if ((event->key() == Qt::Key_X && event->modifiers() == Qt::NoModifier) ||
+        (event->key() == Qt::Key_W && event->modifiers() == Qt::MetaModifier)) {
+      close();
+      return;
+    }
     if (hovered_) {
       if (event->modifiers() == Qt::NoModifier) {
         switch (event->key()) {
-        case Qt::Key_X:
-          close();
-          return;
         case Qt::Key_A:
         case Qt::Key_E:
           reopenInEditor();
@@ -1178,9 +1197,6 @@ protected:
         default:
           break;
         }
-      } else if (event->key() == Qt::Key_W && event->modifiers() == Qt::MetaModifier) {
-        close();
-        return;
       }
     }
     if (event->key() == Qt::Key_Escape) {
@@ -1211,7 +1227,8 @@ protected:
     // The compositor may still list this window while it closes, so it is
     // excluded by name rather than trusted to be gone.
     static_cast<void>(QtConcurrent::run(&pinPool(),
-        [title = windowTitle(), screen = dragScreen_] {
+        [title = windowTitle(), screen = dragScreen_,
+         advanceFocus = !editorHandoff_ && (hovered_ || isActiveWindow())] {
       PinPlacement placement;
       if (!placement.ready())
         return;
@@ -1221,6 +1238,8 @@ protected:
       placement.release(title);
       placement.arrange(screen, !placement.hoverOwner().isEmpty() &&
                                  placement.hoverScreen() == screen, title);
+      if (advanceFocus)
+        placement.focusNext(title, screen);
     }));
     QWidget::closeEvent(event);
   }
@@ -1349,6 +1368,7 @@ private:
   PinSnapshotFile snapshotFile_;
   QVector<CompositorPin> cachedPins_;
   bool closing_ = false;
+  bool editorHandoff_ = false;
   quint64 snapGeneration_ = 0;
   bool queryPending_ = false;
   bool finishRequested_ = false;

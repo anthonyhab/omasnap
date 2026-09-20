@@ -277,6 +277,10 @@ QString pinRaiseDispatch(const QString &address) {
       .arg(windowSelector(address));
 }
 
+QString pinFocusDispatch(const QString &address) {
+  return QStringLiteral("hl.dsp.focus({ %1 })").arg(windowSelector(address));
+}
+
 QRect pinMonitorGeometry(const QJsonObject &monitor) {
   const qreal scale = std::max<qreal>(0.0001, monitor.value(QStringLiteral("scale")).toDouble(1));
   QSize pixels(monitor.value(QStringLiteral("width")).toInt(),

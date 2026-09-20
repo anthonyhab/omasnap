@@ -395,7 +395,9 @@ bool runPinLayoutSmoke(QString &error) {
               "hl.dsp.window.pin({ window = \"address:0x1234\" })") ||
       pinMoveDispatch(title, 120, 40) !=
           QStringLiteral("hl.dsp.window.move({ x = 120, y = 40, relative = "
-                         "false, window = \"address:0x1234\" })")) {
+                         "false, window = \"address:0x1234\" })") ||
+      pinFocusDispatch(title) !=
+          QStringLiteral("hl.dsp.focus({ window = \"address:0x1234\" })")) {
     error = QStringLiteral("Hyprland dispatch expressions were malformed");
     return false;
   }

@@ -79,6 +79,7 @@ pinInsertionPlan(QVector<QPair<QString, QRect>> column,
 [[nodiscard]] QString pinPinDispatch(const QString &address);
 [[nodiscard]] QString pinMoveDispatch(const QString &address, int x, int y);
 [[nodiscard]] QString pinRaiseDispatch(const QString &address);
+[[nodiscard]] QString pinFocusDispatch(const QString &address);
 /// Global logical geometry, including scale and quarter-turn transforms.
 [[nodiscard]] QRect pinMonitorGeometry(const QJsonObject &monitor);
 /// Global logical geometry excluding reserved space for bars on any edge.
