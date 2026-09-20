@@ -15,6 +15,11 @@
 /// 16:9 when the display cannot be asked.
 [[nodiscard]] QSize pinFrameSize(const QSize &screenSize);
 
+/// Keep a freely dropped pin inside a monitor's work area with the stack's
+/// edge inset. If it is smaller than the pin, keep the top-left controls visible.
+[[nodiscard]] QRect pinVisibleRect(const QRect &rect, const QRect &screen,
+                                    int margin);
+
 /// Where a frame of `frame` size lands so it covers none of `blockers`:
 /// snug in the bottom-right corner, or one gap above whatever occupies it,
 /// climbing the column and starting a new column to the left when this one
@@ -56,6 +61,8 @@ pinInsertionPlan(QVector<QPair<QString, QRect>> column,
 [[nodiscard]] QString pinMoveDispatch(const QString &address, int x, int y);
 /// Global logical geometry, including scale and quarter-turn transforms.
 [[nodiscard]] QRect pinMonitorGeometry(const QJsonObject &monitor);
+/// Global logical geometry excluding reserved space for bars on any edge.
+[[nodiscard]] QRect pinMonitorWorkArea(const QJsonObject &monitor);
 
 /** The hover tip for a pin control, empty outside the known controls. */
 [[nodiscard]] QString pinControlTip(int index);

@@ -144,6 +144,10 @@ immediately and adopts the display-shaped size when the query finishes.
 Clipboard actions, editor launches, and drag payload preparation also run on
 workers. Final drag placement reports completion and retries a failed move;
 after repeated failures, the remaining stack closes the insertion gap.
+For compositor-initiated Super drags, the same geometry watch is armed while
+Super is held over a pin. Motion during that drag is not mistaken for release;
+the mouse release or releasing Super completes placement. There is no permanent
+polling timer on idle pins and no global shortcut registration.
 
 ## Pen smoothing budget
 

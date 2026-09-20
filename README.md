@@ -52,6 +52,9 @@ previewing, copying again, dragging into another app, or opening the editor on d
   live preview and dashed seam marker while dragging; annotations shift to follow.
 - Pin a finished capture as a bottom-right floating compositor window, launched
   from the same `omasnap` executable and visible on every workspace.
+  Dropping a pin partly off-screen or underneath a bar brings it fully back
+  inside the monitor where the drag started, with the same 14-pixel gap as
+  the stack from any screen edge or reserved bar area.
 - Crash-resistant working documents under `/run/user/<UID>/omasnap/` (falling back to
   a private `/tmp/omasnap-<UID>/`): the original source image plus a sidecar JSON
   operation log. Undo still works after a crash or `--file` reopen. Saving and
@@ -439,16 +442,19 @@ the runtime snapshot directory, and launches the same `omasnap` executable in
 detached pin mode. Hyprland floats and pins each window on every workspace;
 its border and shadow come from the compositor. Pins pack upward from the focused
 monitor's bottom-right corner, then into further columns. Placement accounts for
-monitor origins, scaling and rotation, and reserves each new target while the
+monitor origins, scaling and rotation, respecting bars on any edge and leaving
+a 14-pixel gap inside the usable area. It reserves each new target while the
 compositor animates it. If no on-screen slot fits, automatic packing leaves the
 window where the compositor placed it.
 
 The preview is 200 logical pixels wide with the display's aspect ratio (height
 clamped to 50–400 pixels). It fills that frame with a top-anchored cover crop;
 copy, edit and drag-out still use the complete full-resolution image. Drag the
-image background to move a pin; dragging over the stack opens an insertion gap,
-and releasing snaps it into that gap. Moving or closing a stacked pin packs the
-remaining column down.
+image background, or use `Super`+left-drag, to move a pin. Dragging over the stack
+opens an insertion gap, and releasing snaps it into that gap. Moving or closing
+a stacked pin packs the remaining column down.
+A drop partly outside the usable area returns fully
+inside the monitor where the drag started, keeping the same 14-pixel edge gap.
 
 Pinning neither touches the clipboard nor writes to the screenshot directory; it is a
 fourth output alongside copy, save, and copy-and-save. `P` closes the editor and releases

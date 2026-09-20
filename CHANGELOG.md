@@ -33,6 +33,9 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 
 ### Fixed
 
+- Give Super+left-drag the same pin stacking and drop recovery as an image drag.
+- Bring off-screen pin drops back inside the monitor where the drag started,
+  using the stack's 14-pixel gap and allowing for bars on any edge.
 - Show Omasnap in the application launcher.
 - Pass notification click actions as separate arguments.
 - Keep the editor viewport and text draft aligned when its window resizes.

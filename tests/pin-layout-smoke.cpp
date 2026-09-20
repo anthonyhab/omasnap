@@ -4,6 +4,7 @@
 #include "pin-layout.hpp"
 #include "cli-path.hpp"
 #include <QCommandLineParser>
+#include <QJsonArray>
 
 #include <QSet>
 
@@ -18,6 +19,76 @@ bool runPinLayoutSmoke(QString &error) {
       pinFrameSize(QSize()) != QSize(200, 113)) {
     error = QStringLiteral("Pin frames did not follow the display's shape");
     return false;
+  }
+
+  // Free drops must keep the whole pin reachable on every screen edge,
+  // including the reported case where only three pixels remain visible.
+  const QRect mainScreen(0, 0, 3072, 1728);
+  const QSize preview(200, 113);
+  const QList<QPair<QRect, QRect>> drops{
+      {{3069, 1629, 200, 113}, {2858, 1601, 200, 113}},
+      {{-197, 600, 200, 113}, {14, 600, 200, 113}},
+      {{1200, -110, 200, 113}, {1200, 14, 200, 113}},
+      {{1200, 1725, 200, 113}, {1200, 1601, 200, 113}},
+      {{1200, 600, 200, 113}, {1200, 600, 200, 113}},
+      {{5000, 3000, 200, 113}, {2858, 1601, 200, 113}}};
+  for (const auto &[drop, expected] : drops) {
+    const QRect visible = pinVisibleRect(drop, mainScreen, 14);
+    if (visible != expected || !mainScreen.contains(visible) ||
+        visible.size() != preview) {
+      error = QStringLiteral("An edge drop left the pin clipped or changed its size");
+      return false;
+    }
+  }
+  const QRect leftScreen(-1024, 0, 1024, 600);
+  if (pinVisibleRect(QRect(-1150, 580, 200, 113), leftScreen, 14) !=
+          QRect(-1010, 473, 200, 113) ||
+      pinVisibleRect(QRect(-150, 150, 200, 113), mainScreen, 14) !=
+          QRect(14, 150, 200, 113) ||
+      pinVisibleRect(QRect(2400, 1800, 200, 113), mainScreen, 14) !=
+          QRect(2400, 1601, 200, 113)) {
+    error = QStringLiteral("Drop bounds did not restore the starting monitor");
+    return false;
+  }
+  // A tiny output cannot hold the image, but its controls stay at the
+  // output's top-left. Missing geometry leaves the pin alone.
+  if (pinVisibleRect(QRect(60, 80, 200, 113), QRect(10, 20, 80, 60), 14) !=
+          QRect(10, 20, 200, 113) ||
+      pinVisibleRect(QRect(60, 80, 200, 113), {}, 14) != QRect(60, 80, 200, 113)) {
+    error = QStringLiteral("Drop bounds mishandled tiny or unavailable outputs");
+    return false;
+  }
+
+  // A bar may reserve any edge (or several). Insets are already logical
+  // pixels even on a scaled monitor; both free drops and stacks respect them.
+  struct BarCase {
+    QJsonArray reserved;
+    QRect area;
+    QPoint drop;
+    QPoint restored;
+    QPoint packed;
+  };
+  const QList<BarCase> bars{
+      {{36, 0, 0, 0}, {36, 0, 3036, 1728}, {-50, 500}, {50, 500}, {2858, 1601}},
+      {{0, 26, 0, 0}, {0, 26, 3072, 1702}, {500, 10}, {500, 40}, {2858, 1601}},
+      {{0, 0, 30, 0}, {0, 0, 3042, 1728}, {2900, 500}, {2828, 500}, {2828, 1601}},
+      {{0, 0, 0, 40}, {0, 0, 3072, 1688}, {500, 1640}, {500, 1561}, {2858, 1561}},
+      {{36, 26, 30, 40}, {36, 26, 3006, 1662}, {-50, 1640}, {50, 1561}, {2828, 1561}},
+      {{0, 0, 0, 0}, {0, 0, 3072, 1728}, {500, -50}, {500, 14}, {2858, 1601}}};
+  QJsonObject monitor{{QStringLiteral("width"), 6144},
+                      {QStringLiteral("height"), 3456},
+                      {QStringLiteral("scale"), 2}};
+  for (const auto &bar : bars) {
+    monitor.insert(QStringLiteral("reserved"), bar.reserved);
+    const QRect area = pinMonitorWorkArea(monitor);
+    const auto packed = pinPackedPosition({}, area.size(), preview, 10, 14);
+    if (area != bar.area ||
+        pinVisibleRect(QRect(bar.drop, preview), area, 14) != QRect(bar.restored, preview) ||
+        !packed || *packed + area.topLeft() != bar.packed ||
+        pinFrameSize(pinMonitorGeometry(monitor).size()) != preview) {
+      error = QStringLiteral("Pin placement ignored a reserved edge or changed its aspect ratio");
+      return false;
+    }
   }
 
   // Every control explains itself; an index outside the controls is empty.
@@ -251,14 +322,20 @@ bool runPinLayoutSmoke(QString &error) {
     error = QStringLiteral("A full or undersized output returned an unsafe slot");
     return false;
   }
-  const QJsonObject rotated{{QStringLiteral("x"), -1080},
+  QJsonObject rotated{{QStringLiteral("x"), -1080},
                              {QStringLiteral("y"), 200},
                              {QStringLiteral("width"), 3840},
                              {QStringLiteral("height"), 2160},
                              {QStringLiteral("scale"), 2},
                              {QStringLiteral("transform"), 1}};
-  if (pinMonitorGeometry(rotated) != QRect(-1080, 200, 1080, 1920)) {
+  if (pinMonitorGeometry(rotated) != QRect(-1080, 200, 1080, 1920) ||
+      pinMonitorWorkArea(rotated) != pinMonitorGeometry(rotated)) {
     error = QStringLiteral("Pin monitor geometry lost origin, scale or transform");
+    return false;
+  }
+  rotated.insert(QStringLiteral("reserved"), QJsonArray{40, 30, 20, 10});
+  if (pinMonitorWorkArea(rotated) != QRect(-1040, 230, 1020, 1880)) {
+    error = QStringLiteral("Reserved edges were scaled or rotated a second time");
     return false;
   }
   return true;

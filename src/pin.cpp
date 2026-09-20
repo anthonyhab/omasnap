@@ -17,6 +17,7 @@
 #include <QFile>
 #include <QEnterEvent>
 #include <QFontMetrics>
+#include <QGuiApplication>
 #include <QHash>
 #include <QImage>
 #include <QKeyEvent>
@@ -38,6 +39,7 @@
 #include <QWheelEvent>
 #include <QWidget>
 #include <QWindow>
+#include <Qt>
 
 #include <fcntl.h>
 #include <linux/input.h>
@@ -46,6 +48,7 @@
 #include <algorithm>
 #include <climits>
 #include <memory>
+#include <optional>
 #include <functional>
 #include <utility>
 
@@ -103,18 +106,28 @@ bool hyprDispatch(const QString &expression) {
   return ok && output.trimmed() == QStringLiteral("ok");
 }
 
-QRect compositorScreenRect(const QPoint &point = {}, bool usePoint = false) {
-  const QJsonArray monitors = QJsonDocument::fromJson(
+struct CompositorMonitor {
+  QRect geometry;
+  QRect workArea;
+};
+
+QJsonArray compositorMonitors() {
+  return QJsonDocument::fromJson(
       runForOutput(QStringLiteral("hyprctl"),
                    {QStringLiteral("-j"), QStringLiteral("monitors")}).toUtf8()).array();
-  QRect focused;
+}
+
+CompositorMonitor compositorMonitor(const QJsonArray &monitors,
+                                    const QPoint &point = {}, bool usePoint = false) {
+  CompositorMonitor focused;
   for (const QJsonValue &value : monitors) {
     const QJsonObject monitor = value.toObject();
-    const QRect geometry = pinMonitorGeometry(monitor);
-    if (usePoint && geometry.contains(point))
-      return geometry;
+    const CompositorMonitor screen{pinMonitorGeometry(monitor), pinMonitorWorkArea(monitor)};
+    // The bar belongs to the monitor too; only placement uses the work area.
+    if (usePoint && screen.geometry.contains(point))
+      return screen;
     if (monitor.value(QStringLiteral("focused")).toBool())
-      focused = geometry;
+      focused = screen;
   }
   return focused;
 }
@@ -309,14 +322,22 @@ public:
     if (queryPending_)
       return;
     queryPending_ = true;
-    using Snapshot = QPair<QRect, QVector<CompositorPin>>;
+    const bool finalSnapshot = finishRequested_;
+    finishRequested_ = false;
+    struct Snapshot {
+      QRect screen;
+      QRect origin;
+      QVector<CompositorPin> pins;
+    };
     auto *watcher = new QFutureWatcher<Snapshot>(this);
-    connect(watcher, &QFutureWatcher<Snapshot>::finished, this, [this, watcher] {
+    connect(watcher, &QFutureWatcher<Snapshot>::finished, this, [this, watcher, finalSnapshot] {
       const auto snapshot = watcher->result();
-      cachedPins_ = snapshot.second;
-      if (!snapshot.first.isEmpty() && snapshot.first != dragScreen_) {
+      cachedPins_ = snapshot.pins;
+      if (!snapshot.origin.isEmpty())
+        dragOriginScreen_ = snapshot.origin;
+      if (!snapshot.screen.isEmpty() && snapshot.screen != dragScreen_) {
         compactPinColumn(windowTitle(), dragScreen_);
-        dragScreen_ = snapshot.first;
+        dragScreen_ = snapshot.screen;
         commandedTargets_.clear();
       }
       watcher->deleteLater();
@@ -324,20 +345,31 @@ public:
       if (closing_)
         return;
       if (finishRequested_) {
-        finishRequested_ = false;
+        // A release arrived while this query was already in flight. Read
+        // again so the drop uses a position observed after the release.
+        requestDragSnapshot();
+      } else if (finalSnapshot) {
         finishDragFromSnapshot();
       } else if (dragWatchTimer_.isActive()) {
         observeDrag();
       }
     });
     const QString title = windowTitle();
-    watcher->setFuture(QtConcurrent::run(&pinPool(), [title]() -> Snapshot {
-      const auto pins = compositorPinRects();
+    // The previous final snapshot can precede a recovery move. Its pin
+    // position may still be clipped on another output; the saved work area
+    // identifies the actual starting monitor and lets us refresh its bar.
+    const QPoint origin = dragOriginScreen_.center();
+    watcher->setFuture(QtConcurrent::run(&pinPool(), [title, origin]() -> Snapshot {
+      const PinPlacement placement;
+      const auto pins = placement.pins;
       for (const CompositorPin &pin : pins) {
-        if (pin.title == title)
-          return {compositorScreenRect(pin.rect.center(), true), pins};
+        if (pin.title == title) {
+          const auto monitors = compositorMonitors();
+          return {compositorMonitor(monitors, pin.rect.center(), true).workArea,
+                  compositorMonitor(monitors, origin, true).workArea, pins};
+        }
       }
-      return {{}, pins};
+      return {{}, {}, pins};
     }));
   }
 
@@ -442,17 +474,23 @@ protected:
   // its starting position and then held one spot for a few polls. A press
   // that never moves the window was a click and times out instead. Either
   // way the column closes the gap behind a pin that was dragged away.
-  void beginDragWatch() {
+  void beginDragWatch(bool compositorDrag = false) {
+    if (compositorDrag && dragWatchTimer_.isActive())
+      return;
     ++snapGeneration_;
+    dragStartRect_ = ownCompositorRect();
+    if (dragStartRect_.isNull())
+      return;
     const QString title = windowTitle();
     static_cast<void>(QtConcurrent::run(&pinPool(), [title] {
       PinPlacement placement;
       if (placement.ready())
         placement.release(title);
     }));
-    dragStartRect_ = ownCompositorRect();
-    if (dragStartRect_.isNull())
-      return;
+    dragOriginScreen_ = dragScreen_;
+    compositorDrag_ = compositorDrag;
+    dragButtonDown_ = std::nullopt;
+    finishRequested_ = false;
 
     dragPreviousRect_ = {};
     commandedTargets_.clear();
@@ -468,7 +506,13 @@ protected:
   void observeDrag() {
     const QRect rect = ownCompositorRect();
     ++dragPolls_;
-    const bool clickTimeout = !dragMoved_ && dragPolls_ >= 12;
+    const bool superHeld = QGuiApplication::keyboardModifiers().testFlag(Qt::MetaModifier);
+    if (compositorDrag_ && !superHeld && dragButtonDown_ != true) {
+      finishDrag();
+      return;
+    }
+    const bool clickTimeout = !dragMoved_ && dragPolls_ >= 12 &&
+                              (!compositorDrag_ || !hovered_ || !superHeld);
     if (rect.isNull() || clickTimeout || dragPolls_ >= 750) {
       dragWatchTimer_.stop();
       closeButtonWatch();
@@ -486,7 +530,8 @@ protected:
     // The release normally arrives from the input device watch or as a
     // pointer event; this long stillness fallback only catches a session
     // where neither could be established.
-    if (dragMoved_ && dragStablePolls_ >= 25)
+    if (dragMoved_ && dragStablePolls_ >= 25 && dragButtonDown_ != true &&
+        (!compositorDrag_ || !superHeld))
       finishDrag();
   }
 
@@ -522,7 +567,10 @@ protected:
       const int count = static_cast<int>(bytes / sizeof(input_event));
       for (int index = 0; index < count; ++index) {
         if (events[index].type != EV_KEY || events[index].code != BTN_LEFT ||
-            events[index].value != 0 || !dragWatchTimer_.isActive())
+            !dragWatchTimer_.isActive())
+          continue;
+        dragButtonDown_ = events[index].value != 0;
+        if (*dragButtonDown_)
           continue;
         finishDrag();
         closeButtonWatch();
@@ -548,7 +596,19 @@ protected:
   void pointerWokeDuringWatch() {
     if (!dragWatchTimer_.isActive())
       return;
+    // Unlike an XDG move, a compositor keybind can keep delivering motion
+    // throughout its drag. Those events are not a release.
+    if (compositorDrag_ && (dragButtonDown_ == true ||
+        QGuiApplication::keyboardModifiers().testFlag(Qt::MetaModifier)))
+      return;
     finishDrag();
+  }
+
+  void watchCompositorDrag(Qt::KeyboardModifiers modifiers) {
+    // Super+mouse is consumed by Hyprland, so arm the same geometry watch
+    // when Super reaches a hovered pin, including entering with it held.
+    if (hovered_ && modifiers.testFlag(Qt::MetaModifier))
+      beginDragWatch(true);
   }
 
   void finishDrag() {
@@ -562,14 +622,30 @@ protected:
     // One last look at the true final position; the last poll can be a
     // frame behind it.
     const QRect rect = ownCompositorRect();
-    if (!dragMoved_ && rect == dragStartRect_)
+    if (!dragMoved_ && rect == dragStartRect_) {
       return;
-    if (!rect.isNull())
-      previewInsertion(rect);
-    if (!snapSpot_.isNull())
+    }
+    QRect visible = rect;
+    if (!rect.isEmpty() && !dragScreen_.contains(rect) && !dragOriginScreen_.isEmpty()) {
+      // Remember the starting monitor throughout the drag. A clipped drop
+      // returns there even if its centre crossed into a neighbouring output
+      // or an empty part of the desktop layout. Fully visible transfers stay.
+      visible = pinVisibleRect(rect, dragOriginScreen_, qRound(kCornerMargin));
+      if (dragScreen_ != dragOriginScreen_) {
+        compactPinColumn(windowTitle(), dragScreen_);
+        dragScreen_ = dragOriginScreen_;
+        commandedTargets_.clear();
+      }
+    }
+    if (!visible.isNull())
+      previewInsertion(visible);
+    if (!snapSpot_.isNull()) {
       requestSnap(snapSpot_, ++snapGeneration_);
-    else
+    } else {
+      if (visible != rect)
+        requestSnap(visible, ++snapGeneration_);
       compactPinColumn(windowTitle(), dragScreen_);
+    }
     spreadActive_ = false;
   }
 
@@ -581,15 +657,22 @@ protected:
             [this, watcher, target, generation, attempt] {
       const bool moved = watcher->result();
       watcher->deleteLater();
-      if (closing_ || generation != snapGeneration_ || moved)
+      if (closing_ || generation != snapGeneration_)
         return;
+      if (moved) {
+        for (CompositorPin &pin : cachedPins_) {
+          if (pin.title == windowTitle())
+            pin.rect = target;
+        }
+        return;
+      }
       if (attempt < 2) {
         QTimer::singleShot(50, this, [this, target, generation, attempt] {
           requestSnap(target, generation, attempt + 1);
         });
       } else {
         compactPinColumn(windowTitle(), dragScreen_);
-        showToast(QStringLiteral("Could not snap capture into the stack"));
+        showToast(QStringLiteral("Could not position pinned capture"));
       }
     });
     watcher->setFuture(movePin(windowTitle(), target));
@@ -688,6 +771,7 @@ protected:
 
   void mouseMoveEvent(QMouseEvent *event) override {
     pointerWokeDuringWatch();
+    watchCompositorDrag(event->modifiers());
     const QPointF position = event->position();
     setCursor(controlRectAt(position) >= 0 ? Qt::PointingHandCursor
                                            : Qt::ArrowCursor);
@@ -717,7 +801,6 @@ protected:
     return QWidget::event(event);
   }
 
-
   // The six-dot control starts a file drag. Its optional PNG and thumbnail
   // payloads are prepared on a worker so pointer input never encodes images.
   void beginFileDrag() {
@@ -741,6 +824,11 @@ protected:
   }
 
   void keyPressEvent(QKeyEvent *event) override {
+    if (event->key() == Qt::Key_Meta && !event->isAutoRepeat()) {
+      watchCompositorDrag(event->modifiers() | Qt::MetaModifier);
+      event->accept();
+      return;
+    }
     if (event->key() == Qt::Key_Escape) {
       close();
       return;
@@ -750,6 +838,13 @@ protected:
       return;
     }
     QWidget::keyPressEvent(event);
+  }
+
+  void keyReleaseEvent(QKeyEvent *event) override {
+    if (event->key() == Qt::Key_Meta && !event->isAutoRepeat() &&
+        compositorDrag_ && dragWatchTimer_.isActive() && dragButtonDown_ != true)
+      finishDrag();
+    QWidget::keyReleaseEvent(event);
   }
 
   void closeEvent(QCloseEvent *event) override {
@@ -765,6 +860,7 @@ protected:
   void enterEvent(QEnterEvent *) override {
     pointerWokeDuringWatch();
     hovered_ = true;
+    watchCompositorDrag(QGuiApplication::keyboardModifiers());
     hoveredControl_ = -1;
     update();
   }
@@ -827,8 +923,11 @@ private:
   quint64 snapGeneration_ = 0;
   bool queryPending_ = false;
   bool finishRequested_ = false;
+  bool compositorDrag_ = false;
+  std::optional<bool> dragButtonDown_;
   QTimer dragWatchTimer_;
   QRect dragStartRect_;
+  QRect dragOriginScreen_;
   QRect dragPreviousRect_;
   QRect dragScreen_;
   QHash<QString, QPoint> commandedTargets_;
@@ -908,13 +1007,14 @@ int runPinnedCapture(const QString &path) {
       return {screen, placement.pins};
     }));
   });
-  auto *monitor = new QFutureWatcher<QRect>(&window);
-  QObject::connect(monitor, &QFutureWatcher<QRect>::finished, &window,
+  auto *monitor = new QFutureWatcher<CompositorMonitor>(&window);
+  QObject::connect(monitor, &QFutureWatcher<CompositorMonitor>::finished, &window,
                    [&window, monitor, watcher, settle, screen, attempts = 0]() mutable {
-    *screen = monitor->result();
+    const auto result = monitor->result();
+    *screen = result.workArea;
     if (screen->isEmpty() && ++attempts < 10) {
       QTimer::singleShot(50, &window, [monitor] {
-        monitor->setFuture(QtConcurrent::run(&pinPool(), [] { return compositorScreenRect(); }));
+        monitor->setFuture(QtConcurrent::run(&pinPool(), [] { return compositorMonitor(compositorMonitors()); }));
       });
       return;
     }
@@ -925,12 +1025,12 @@ int runPinnedCapture(const QString &path) {
       watcher->deleteLater();
       return;
     }
-    window.setFixedSize(pinFrameSize(screen->size()));
+    window.setFixedSize(pinFrameSize(result.geometry.size()));
     settle->start();
   });
   // Register before mapping: a post-capture preview must not take keyboard
-  // focus from the app the user is returning to. Keep click-to-focus so pin
-  // shortcuts and compositor dragging still work when deliberately selected.
+  // focus from the app the user is returning to. Hovering subsequently
+  // follows normal mouse focus so pin shortcuts target the hovered capture.
   const auto applyRules = [] {
     bool ok = false;
     const QString output = runForOutput(
@@ -939,7 +1039,7 @@ int runPinnedCapture(const QString &path) {
          QStringLiteral("hl.window_rule({ name = \"omasnap-pins\", "
                         "match = { class = \"^omasnap$\", title = \"^omasnap-pin [0-9]+$\" }, "
                         "float = true, pin = true, no_initial_focus = true, "
-                        "no_follow_mouse = true })")}, &ok);
+                        "no_follow_mouse = false })")}, &ok);
     return ok && !output.contains(QStringLiteral("error"), Qt::CaseInsensitive);
   };
   auto *rules = new QFutureWatcher<bool>(&window);
@@ -959,7 +1059,7 @@ int runPinnedCapture(const QString &path) {
     rules->deleteLater();
     window.show();
     monitor->setFuture(QtConcurrent::run(&pinPool(), [] {
-      return compositorScreenRect();
+      return compositorMonitor(compositorMonitors());
     }));
   });
   rules->setFuture(QtConcurrent::run(&pinPool(), applyRules));

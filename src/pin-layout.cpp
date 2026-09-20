@@ -1,6 +1,8 @@
 /** @fileoverview Implements pinned-window stacking and dispatch helpers. */
 #include "pin-layout.hpp"
 
+#include <QJsonArray>
+
 #include <algorithm>
 #include <cmath>
 
@@ -13,6 +15,19 @@ QSize pinFrameSize(const QSize &screenSize) {
   const int height = std::clamp(static_cast<int>(std::lround(width * aspect)),
                                 width / 4, width * 2);
   return {width, height};
+}
+
+QRect pinVisibleRect(const QRect &rect, const QRect &screen, int margin) {
+  if (rect.isEmpty() || screen.isEmpty())
+    return rect;
+  const int insetX = std::clamp(margin, 0, std::max(0, (screen.width() - rect.width()) / 2));
+  const int insetY = std::clamp(margin, 0, std::max(0, (screen.height() - rect.height()) / 2));
+  const int left = screen.left() + insetX;
+  const int top = screen.top() + insetY;
+  const int right = std::max(left, screen.right() - rect.width() + 1 - insetX);
+  const int bottom = std::max(top, screen.bottom() - rect.height() + 1 - insetY);
+  return {QPoint(std::clamp(rect.x(), left, right),
+                 std::clamp(rect.y(), top, bottom)), rect.size()};
 }
 
 std::optional<QPoint> pinPackedPosition(const QVector<QRect> &blockers,
@@ -187,6 +202,19 @@ QRect pinMonitorGeometry(const QJsonObject &monitor) {
   return {monitor.value(QStringLiteral("x")).toInt(),
           monitor.value(QStringLiteral("y")).toInt(),
           qRound(pixels.width() / scale), qRound(pixels.height() / scale)};
+}
+
+QRect pinMonitorWorkArea(const QJsonObject &monitor) {
+  const QRect geometry = pinMonitorGeometry(monitor);
+  const QJsonArray reserved = monitor.value(QStringLiteral("reserved")).toArray();
+  if (reserved.size() != 4)
+    return geometry;
+  // Hyprland reports left, top, right, bottom in logical coordinates,
+  // already accounting for the output's scale and transform.
+  return geometry.adjusted(std::max(0, reserved.at(0).toInt()),
+                           std::max(0, reserved.at(1).toInt()),
+                           -std::max(0, reserved.at(2).toInt()),
+                           -std::max(0, reserved.at(3).toInt()));
 }
 
 QString pinControlTip(int index) {
