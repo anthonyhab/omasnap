@@ -401,9 +401,10 @@ into a scrolling capture. Explicit `region`, `windows`, `fullscreen`, and
 | `Esc` | Dismiss; cancel a selection drag if one is in progress |
 
 Region memory is stored in Omasnap's private runtime directory. It survives
-closing and reopening Omasnap, but is cleared with the login session's runtime
-files. A region from another monitor, a different overlay size, or outside the
-current screen is ignored; draw a new region after changing the display layout.
+closing and reopening Omasnap and lasts until those runtime files are removed
+(normally when the login session ends). A region from another monitor, a
+different overlay size, or outside the current screen is ignored; draw a new
+region after changing the display layout.
 
 ### Annotation editor
 
