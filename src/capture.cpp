@@ -1694,6 +1694,16 @@ QString moveSnapshotToScreenshots(const QString &sourcePath, QString &error,
   return {};
 }
 
+QString copySnapshotToScreenshots(const QString &sourcePath, QString &error) {
+  const QString targetPath = screenshotTargetPath(error, {});
+  if (targetPath.isEmpty())
+    return {};
+  if (QFile::copy(sourcePath, targetPath))
+    return targetPath;
+  error = QStringLiteral("Could not save screenshot to: %1").arg(targetPath);
+  return {};
+}
+
 QString temporarySnapshotPath() {
   // Stable per process so repeated saves overwrite one working snapshot.
   static const quint32 nonce = QRandomGenerator::global()->generate();

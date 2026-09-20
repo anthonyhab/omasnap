@@ -494,14 +494,19 @@ Automatic expiry compacts the stack without transferring keyboard focus.
 |---|---|
 | Pin button, `Ctrl+P` while focused | Keep on screen; press again to unpin and restart the countdown |
 | Edit button, `A` / `E` while hovered | Reopen the full-resolution PNG in Omasnap and replace the pin |
-| Link button, `L` / `F` while hovered | Copy the source file path |
+| Link button, `L` / `F` while hovered | Save the capture if needed and copy its file path |
 | Copy button, `C` while hovered, `Ctrl+C` | Copy the full-resolution PNG |
 | Top-left six-dot drag handle | Drag the PNG into a file-capable drop target |
 | Wheel | Keep the fixed preview size |
 | Close button, `X` / `Super+W` while focused, `Esc`, middle-click | Close and focus the next pin |
 
 Image and path copying use `wl-copy` rather than `QClipboard`, so clipboard data remains
-available after the pin is closed. Hyprland placement uses runtime dispatches and
+available after the pin is closed. Copying a temporary capture's path first saves
+its PNG in the configured screenshots directory. Repeated copies reuse that file;
+closing or expiring the preview leaves the saved copy available. A pin opened from
+an existing file copies that file's original path.
+
+Hyprland placement uses runtime dispatches and
 requires no user window rules. The controls use the annotation toolbar’s vector icons.
 
 Canvas boundary changes affect only preview and export clipping. The complete vector

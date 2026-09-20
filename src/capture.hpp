@@ -356,6 +356,9 @@ QImage applyRedactionsScaled(QImage image, const QVector<Annotation> &redactions
 [[nodiscard]] QString moveSnapshotToScreenshots(const QString &sourcePath,
                                                 QString &error,
                                                 const QString &appSlug = {});
+/** Saves an already-rendered PNG without consuming the live pin's source. */
+[[nodiscard]] QString copySnapshotToScreenshots(const QString &sourcePath,
+                                                QString &error);
 [[nodiscard]] QString temporarySnapshotPath();
 [[nodiscard]] QString pinnedSnapshotPath(int index);
 void prunePinnedSnapshots();

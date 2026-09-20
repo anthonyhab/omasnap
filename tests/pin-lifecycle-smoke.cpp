@@ -12,6 +12,8 @@
 #include <QImage>
 #include <QElapsedTimer>
 #include <QSignalSpy>
+#include <QTemporaryDir>
+#include <QScopeGuard>
 #include <QTest>
 
 #include <fcntl.h>
@@ -91,6 +93,39 @@ bool runPinLifecycleSmoke(QString &error) {
 
   QImage image(8, 8, QImage::Format_ARGB32_Premultiplied);
   image.fill(Qt::white);
+
+  // Copying a temporary pin's path exports a durable file; closing the pin
+  // must still clean up its runtime document without invalidating that path.
+  QTemporaryDir screenshots;
+  if (!screenshots.isValid()) {
+    error = QStringLiteral("Could not create pin path export directory");
+    return false;
+  }
+  const QByteArray oldDirectory = qgetenv("OMASNAP_SCREENSHOT_DIR");
+  const auto restoreDirectory = qScopeGuard([&] {
+    oldDirectory.isNull() ? qunsetenv("OMASNAP_SCREENSHOT_DIR")
+                          : qputenv("OMASNAP_SCREENSHOT_DIR", oldDirectory);
+  });
+  qputenv("OMASNAP_SCREENSHOT_DIR", screenshots.path().toUtf8());
+  const QString sourcePath = pinnedSnapshotPath(987661);
+  QString exportedPath;
+  if (!savePinnedSnapshot(image, sourcePath, QSize(4, 4), error))
+    return false;
+  {
+    PinSnapshotFile source(sourcePath);
+    exportedPath = copySnapshotToScreenshots(sourcePath, error);
+    if (!source.isLocked() || exportedPath.isEmpty() ||
+        !QFile::exists(sourcePath) || !QFile::exists(operationLogPath(sourcePath)) ||
+        QFileInfo(exportedPath).absolutePath() != screenshots.path()) {
+      error = QStringLiteral("Sharing a pin path consumed its source or ignored the output directory");
+      return false;
+    }
+  }
+  if (QFile::exists(sourcePath) || QFile::exists(operationLogPath(sourcePath)) ||
+      QImage(exportedPath).convertToFormat(image.format()) != image) {
+    error = QStringLiteral("Closing a pin invalidated the shared file or leaked its runtime document");
+    return false;
+  }
 
   // Editing a pinned snapshot reopens at the captured scale: the pin save
   // records the logical size in a sidecar the file editor reads back.

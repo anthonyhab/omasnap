@@ -312,7 +312,7 @@ QString pinControlTip(int index, bool kept) {
   case 1:
     return QStringLiteral("Copy image · C / Ctrl+C");
   case 2:
-    return QStringLiteral("Copy file path · L / F");
+    return QStringLiteral("Copy saved file path · L / F");
   case 3:
     return QStringLiteral("Annotate · A / E");
   case 4:

@@ -41,6 +41,8 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 
 ### Fixed
 
+- Keep copied file paths usable after closing or expiring previews by saving
+  the PNG before copying its path.
 - Focus the next pin when closing one, so repeated X presses work without
   another mouse movement.
 - Give Super+left-drag the same pin stacking and drop recovery as an image drag.

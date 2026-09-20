@@ -16,6 +16,7 @@
 #include <QDir>
 #include <QDrag>
 #include <QFile>
+#include <QFileInfo>
 #include <QFileSystemWatcher>
 #include <QEnterEvent>
 #include <QElapsedTimer>
@@ -1091,21 +1092,29 @@ protected:
     return {};
   }
 
-  void runAction(std::function<QString()> worker, QString message,
+  struct ActionResult {
+    QString error;
+    QString sharedPath;
+  };
+
+  void runAction(std::function<ActionResult()> worker, QString message,
                  bool reopening = false) {
     if (actionPending_)
       return;
     actionPending_ = true;
     updateExpiryPause();
-    auto *watcher = new QFutureWatcher<QString>(this);
-    connect(watcher, &QFutureWatcher<QString>::finished, this,
+    auto *watcher = new QFutureWatcher<ActionResult>(this);
+    connect(watcher, &QFutureWatcher<ActionResult>::finished, this,
             [this, watcher, message, reopening] {
-      const QString error = watcher->result();
+      const auto result = watcher->result();
       watcher->deleteLater();
       actionPending_ = false;
       updateExpiryPause();
-      if (!error.isEmpty())
-        showToast(error);
+      // Reuse a successful save even if the following clipboard write failed.
+      if (!result.sharedPath.isEmpty())
+        sharedPath_ = result.sharedPath;
+      if (!result.error.isEmpty())
+        showToast(result.error);
       else if (reopening) {
         snapshotFile_.preserveForEditor();
         editorHandoff_ = true;
@@ -1121,27 +1130,36 @@ protected:
     runAction([image = image_] {
       QString error;
       static_cast<void>(copyImageToClipboard(image, error));
-      return error;
+      return ActionResult{error, {}};
     }, QStringLiteral("Copied to clipboard"));
   }
 
   void copyPath() {
-    runAction([path = path_] {
+    runAction([path = path_, shared = sharedPath_]() mutable {
       QString error;
-      static_cast<void>(copyTextToClipboard(path, error));
-      return error;
+      if (shared.isEmpty() || !QFileInfo::exists(shared)) {
+        // Runtime captures disappear with their previews. Copy the encoded
+        // PNG once so a shared path remains useful after expiry or closing.
+        // An existing file opened with --pin already has its own lifetime.
+        const QFileInfo source(path);
+        shared = source.absolutePath() == secureRuntimeDirectory()
+                     ? copySnapshotToScreenshots(path, error) : source.absoluteFilePath();
+      }
+      if (!shared.isEmpty())
+        static_cast<void>(copyTextToClipboard(shared, error));
+      return ActionResult{error, shared};
     }, QStringLiteral("Copied path"));
   }
 
   void reopenInEditor() {
-    runAction([program = QCoreApplication::applicationFilePath(), path = path_] {
+    runAction([program = QCoreApplication::applicationFilePath(), path = path_]() -> ActionResult {
       PinSnapshotFile handoff(path);
       if (!handoff.isLocked())
-        return QStringLiteral("Could not retain the pinned capture");
+        return {QStringLiteral("Could not retain the pinned capture"), {}};
       if (!QProcess::startDetached(program, {path}))
-        return QStringLiteral("Could not start omasnap");
+        return {QStringLiteral("Could not start omasnap"), {}};
       handoff.preserveForEditor();
-      return QString();
+      return {};
     }, {}, true);
   }
 
@@ -1441,6 +1459,7 @@ private:
   QImage dragPreview_;
   bool actionPending_ = false;
   QString path_;
+  QString sharedPath_;
   PinSnapshotFile snapshotFile_;
   QVector<CompositorPin> cachedPins_;
   bool closing_ = false;
