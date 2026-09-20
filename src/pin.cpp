@@ -54,10 +54,10 @@
 
 namespace {
 
-constexpr qreal kCloseButtonSize = 18;
-constexpr qreal kCloseButtonInset = 7;
+constexpr qreal kControlSize = 23;
+constexpr qreal kControlInset = 7;
 constexpr qreal kControlGap = 6;
-constexpr qreal kDragButtonWidth = kCloseButtonSize * 2 + kControlGap;
+constexpr qreal kDragButtonWidth = 18;
 constexpr qreal kCornerMargin = 14;
 constexpr int kPinGap = 10;
 constexpr int kToastMs = 1200;
@@ -292,6 +292,7 @@ public:
     // its own instead of first stretching it into a tile.
     setFixedSize(frame);
     setAttribute(Qt::WA_AlwaysShowToolTips, true);
+    setMouseTracking(true);
     dragWatchTimer_.setInterval(80);
     connect(&dragWatchTimer_, &QTimer::timeout, this,
             [this] { requestDragSnapshot(); });
@@ -451,11 +452,7 @@ protected:
         return;
       }
       if (pathButtonRect().contains(position)) {
-        runAction([path = path_] {
-          QString error;
-          static_cast<void>(copyTextToClipboard(path, error));
-          return error;
-        }, QStringLiteral("Copied path"));
+        copyPath();
         return;
       }
       if (editButtonRect().contains(position)) {
@@ -757,6 +754,14 @@ protected:
     }, QStringLiteral("Copied to clipboard"));
   }
 
+  void copyPath() {
+    runAction([path = path_] {
+      QString error;
+      static_cast<void>(copyTextToClipboard(path, error));
+      return error;
+    }, QStringLiteral("Copied path"));
+  }
+
   void reopenInEditor() {
     runAction([program = QCoreApplication::applicationFilePath(), path = path_] {
       PinSnapshotFile handoff(path);
@@ -772,11 +777,8 @@ protected:
   void mouseMoveEvent(QMouseEvent *event) override {
     pointerWokeDuringWatch();
     watchCompositorDrag(event->modifiers());
-    const QPointF position = event->position();
-    setCursor(controlRectAt(position) >= 0 ? Qt::PointingHandCursor
-                                           : Qt::ArrowCursor);
-
-    const int control = controlRectAt(position);
+    const int control = controlRectAt(event->position());
+    setCursor(control >= 0 ? Qt::PointingHandCursor : Qt::ArrowCursor);
     if (control != hoveredControl_) {
       hoveredControl_ = control;
       update();
@@ -824,10 +826,39 @@ protected:
   }
 
   void keyPressEvent(QKeyEvent *event) override {
-    if (event->key() == Qt::Key_Meta && !event->isAutoRepeat()) {
+    if (event->isAutoRepeat()) {
+      event->accept();
+      return;
+    }
+    if (event->key() == Qt::Key_Meta) {
       watchCompositorDrag(event->modifiers() | Qt::MetaModifier);
       event->accept();
       return;
+    }
+    if (hovered_) {
+      if (event->modifiers() == Qt::NoModifier) {
+        switch (event->key()) {
+        case Qt::Key_X:
+          close();
+          return;
+        case Qt::Key_A:
+        case Qt::Key_E:
+          reopenInEditor();
+          return;
+        case Qt::Key_C:
+          copyImage();
+          return;
+        case Qt::Key_L:
+        case Qt::Key_F:
+          copyPath();
+          return;
+        default:
+          break;
+        }
+      } else if (event->key() == Qt::Key_W && event->modifiers() == Qt::MetaModifier) {
+        close();
+        return;
+      }
     }
     if (event->key() == Qt::Key_Escape) {
       close();
@@ -857,11 +888,12 @@ protected:
     QWidget::closeEvent(event);
   }
 
-  void enterEvent(QEnterEvent *) override {
+  void enterEvent(QEnterEvent *event) override {
     pointerWokeDuringWatch();
     hovered_ = true;
     watchCompositorDrag(QGuiApplication::keyboardModifiers());
-    hoveredControl_ = -1;
+    hoveredControl_ = controlRectAt(event->position());
+    setCursor(hoveredControl_ >= 0 ? Qt::PointingHandCursor : Qt::ArrowCursor);
     update();
   }
 
@@ -882,7 +914,7 @@ private:
     });
   }
 
-  // The wide drag handle stands alone in the top-left; edit, path, copy, and
+  // The drag handle stands alone in the top-left; edit, path, copy, and
   // close remain grouped in the top-right.
   [[nodiscard]] QRectF closeButtonRect() const { return controlRect(0); }
 
@@ -895,13 +927,13 @@ private:
   [[nodiscard]] QRectF dragButtonRect() const { return controlRect(4); }
 
   [[nodiscard]] QRectF controlRect(int index) const {
-    const qreal right = width() - kCloseButtonSize - kCloseButtonInset;
+    const qreal right = width() - kControlSize - kControlInset;
     if (index < 4) {
-      return QRectF(right - index * (kCloseButtonSize + kControlGap),
-                    kCloseButtonInset, kCloseButtonSize, kCloseButtonSize);
+      return QRectF(right - index * (kControlSize + kControlGap),
+                    kControlInset, kControlSize, kControlSize);
     }
-    return QRectF(kCloseButtonInset, kCloseButtonInset, kDragButtonWidth,
-                  kCloseButtonSize);
+    return QRectF(kControlInset, kControlInset, kDragButtonWidth,
+                  kControlSize);
   }
 
   [[nodiscard]] int controlRectAt(const QPointF &position) const {

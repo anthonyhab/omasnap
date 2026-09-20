@@ -220,13 +220,13 @@ QRect pinMonitorWorkArea(const QJsonObject &monitor) {
 QString pinControlTip(int index) {
   switch (index) {
   case 0:
-    return QStringLiteral("Close · Esc or middle-click");
+    return QStringLiteral("Close · X / Super+W / Esc / middle-click");
   case 1:
-    return QStringLiteral("Copy image to clipboard");
+    return QStringLiteral("Copy image · C / Ctrl+C");
   case 2:
-    return QStringLiteral("Copy file path");
+    return QStringLiteral("Copy file path · L / F");
   case 3:
-    return QStringLiteral("Edit in omasnap");
+    return QStringLiteral("Annotate · A / E");
   case 4:
     return QStringLiteral("Drag this image out");
   default:

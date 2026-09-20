@@ -461,16 +461,18 @@ fourth output alongside copy, save, and copy-and-save. `P` closes the editor and
 the single-instance lock immediately. Pins from separate captures accumulate as independent
 processes.
 
-Hover the pin to reveal its controls:
+Hover the pin to reveal its controls and use its keyboard shortcuts; the cursor
+becomes a pointing hand over each button. Pins follow normal mouse focus while
+hovered and keep focus with the current app when first created.
 
 | Input on a pin | Action |
 |---|---|
-| Edit button | Reopen the full-resolution PNG in Omasnap and replace the pin |
-| Link button | Copy the source file path |
-| Copy button, `Ctrl+C` | Copy the full-resolution PNG |
-| Double-wide top-left drag handle | Drag the PNG into a file-capable drop target |
+| Edit button, `A` / `E` while hovered | Reopen the full-resolution PNG in Omasnap and replace the pin |
+| Link button, `L` / `F` while hovered | Copy the source file path |
+| Copy button, `C` while hovered, `Ctrl+C` | Copy the full-resolution PNG |
+| Top-left six-dot drag handle | Drag the PNG into a file-capable drop target |
 | Wheel | Keep the fixed preview size |
-| Close button, `Esc`, middle-click | Close |
+| Close button, `X` / `Super+W` while hovered, `Esc`, middle-click | Close |
 
 Image and path copying use `wl-copy` rather than `QClipboard`, so clipboard data remains
 available after the pin is closed. Hyprland placement uses runtime dispatches and

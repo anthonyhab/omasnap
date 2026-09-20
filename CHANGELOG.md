@@ -33,9 +33,13 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 
 ### Fixed
 
+- Support hovered-pin shortcuts: X / Super+W to close, A / E to annotate,
+  C to copy the image, and L / F to copy its file path.
 - Give Super+left-drag the same pin stacking and drop recovery as an image drag.
 - Bring off-screen pin drops back inside the monitor where the drag started,
   using the stack's 14-pixel gap and allowing for bars on any edge.
+- Match padding across pin controls while keeping the drag-out handle narrow.
+- Show a pointing-hand cursor when hovering over pin buttons.
 - Show Omasnap in the application launcher.
 - Pass notification click actions as separate arguments.
 - Keep the editor viewport and text draft aligned when its window resizes.
