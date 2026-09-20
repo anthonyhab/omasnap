@@ -12,6 +12,8 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 
 ### Changed
 
+- Keep a preview pinned once it is dragged, whether reordering the stack or
+  moving it elsewhere on screen, including Super+left-drag.
 - Use the active window-border color for the pin icon while a preview is pinned.
 - Match pins, editor controls, tooltips, window-selection highlights, and crop
   outlines to Omarchy's theme files, with live updates when the theme changes.

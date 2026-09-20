@@ -184,8 +184,10 @@ pin expiry and explicit pin actions do not use it. Returning the document still
 runs on the existing worker, and repeated close requests cannot interrupt it.
 
 Normal previews use a one-shot ten-second timer and a short paint-opacity fade.
-Only explicit pin actions disable that timer. Hover, shared stack activity,
-drags, and pending actions pause the remaining time without changing pin state.
+Explicit pin actions and moving a preview disable that timer. The existing drag
+watch detects movement, including a quick drag seen only in its final snapshot.
+Hover, shared stack activity, file sharing drags, and pending actions pause the
+remaining time without changing pin state.
 Unpinning restarts its countdown, paused until ongoing
 interaction finishes. Expiry compacts the stack on the placement worker and never issues
 a focus transfer. No extra compositor polling or process is needed for the fade.
