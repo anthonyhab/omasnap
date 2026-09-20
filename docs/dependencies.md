@@ -63,8 +63,8 @@ spend it on.
 ## The one config file
 
 `~/.config/omasnap/omasnap.conf` is optional INI, read with `QSettings`.
-It exists for exactly two things people legitimately need to override
-(screenshot destination/filename pattern, and preset colors) — not as a
+Its existing overrides cover screenshot destination/filename patterns, preset
+colors, editor presentation, and custom backdrop defaults. It is not a
 general settings mechanism. See the "minimally configurable" principle in
 [AGENTS.md](../AGENTS.md) before adding a new key: the bar is "this is a
 real escape hatch for a real divergent need," the same bar the existing

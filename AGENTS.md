@@ -28,8 +28,9 @@ change that touches the principle, not just this summary.
 - **Every operation is undoable.** The operation log is the source of
   truth; the visible image is rebuilt from it. Rendering for editing is a
   pure, repeatable function of that log — nothing is baked into the working
-  image as you draw. Fresh captures copy and show a timed preview by default; during editing,
-  output is applied only on **Copy**, **Save**, or both (or an explicit pin),
+  image as you draw. Fresh captures copy and show a timed preview by default;
+  during editing, output is applied only on **Copy**, **Save**, or both
+  (or an explicit pin),
   which is the one moment a flattened image is produced. Redaction is the
   deliberate, documented exception: it must actually destroy pixels at
   render time so nothing recoverable leaks into an export, while remaining
@@ -93,7 +94,8 @@ change that touches the principle, not just this summary.
 | `src/cut.cpp/.hpp` | Cut-band tool: remove a strip and collapse the gap |
 | `src/recent-snaps.cpp/.hpp` | The recents shelf: shelving/reopening working documents |
 | `src/output-config.cpp/.hpp`, `src/palette-config.cpp/.hpp` | The optional `omasnap.conf` INI: output destination/filename, color presets |
-| `src/pin.cpp/.hpp`, `src/pin-file.cpp/.hpp`, `src/pin-layout.cpp/.hpp` | Floating pinned captures, their lifetime, and compositor placement |
+| `src/pin.cpp/.hpp`, `src/pin-file.cpp/.hpp`, `src/pin-layout.cpp/.hpp` | Floating pinned captures, their files, and compositor placement |
+| `src/pin-expiry.cpp/.hpp` | Preview countdown, interaction pauses, and fade |
 | `src/icons.cpp/.hpp` | Vector icon renderer for toolbar and pin controls |
 | `src/cli-path.cpp/.hpp` | Command-line image target resolution |
 | `src/eyedropper.cpp/.hpp` | Display-to-source color sampling |

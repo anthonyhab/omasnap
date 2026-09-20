@@ -14,6 +14,8 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 - Adjustable pen smoothing with undoable levels from 0 to 6.
 - A normal editor window alongside the fullscreen overlay; `W` switches
   presentations while keeping the working document and undo history.
+- Hovered-pin shortcuts: X / Super+W to close, A / E to annotate,
+  C to copy the image, and L / F to copy its file path.
 
 ### Changed
 
@@ -39,8 +41,6 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 
 ### Fixed
 
-- Support hovered-pin shortcuts: X / Super+W to close, A / E to annotate,
-  C to copy the image, and L / F to copy its file path.
 - Focus the next pin when closing one, so repeated X presses work without
   another mouse movement.
 - Give Super+left-drag the same pin stacking and drop recovery as an image drag.

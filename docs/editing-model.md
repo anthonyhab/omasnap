@@ -34,9 +34,8 @@ source pixels underneath were never touched.
 
 Completing a fresh capture copies it and shows a timed preview by default. The
 preview fades after 10 seconds of idle time; its pin button or Ctrl+P keeps it.
-`--editor overlay`
-or `--editor window` opens annotation before output; a pin's Edit button also
-opens the editor on demand. During editing, output happens on **Copy**,
+`--editor overlay` or `--editor window` opens annotation before output; a pin's
+Edit button also opens the editor on demand. During editing, output happens on **Copy**,
 **Save**, or both together (`CaptureEditor::finish()`), plus pinning a
 snapshot. Each output calls `renderCapture` once, off the UI thread (see
 [threading.md](threading.md)), and writes the result. Until one of those

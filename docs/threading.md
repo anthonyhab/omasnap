@@ -97,7 +97,7 @@ purpose every time, since nothing enforces it automatically.
   back on the UI thread, after the watcher had already proven the async
   shape was easy to reach. Fixed to do the encode+write inside the same
   worker lambda as the render and process launch, so the slot only closes
-  the editor or displays an error. Automatic copy-and-pin output uses the
+  the editor or displays an error. Automatic copy-and-preview output uses the
   same worker helper, including clipboard verification.
 
 ## A known violation, not yet fixed

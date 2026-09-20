@@ -210,10 +210,11 @@ omasnap --scroll
 Drag a region, then pick a direction: **Scroll ↓ / →** scrolls the page
 yourself while omasnap captures each step, and **Auto ↓ / →** scrolls it for
 you, one acknowledged notch at a time, stopping when the page stops moving.
-The frames are aligned and stitched into one image, copied, and pinned. Open the
-pin's editor to annotate it; `Ctrl`+wheel zooms and the wheel scrolls it.
+The frames are aligned and stitched into one image, copied, and shown in a timed
+preview. Keep it with the pin button or `Ctrl+P`, or open its editor to annotate
+it; `Ctrl`+wheel zooms and the wheel scrolls it.
 
-Compatibility positional names are also accepted:
+Positional capture modes are also accepted:
 
 ```bash
 omasnap region
@@ -222,14 +223,15 @@ omasnap fullscreen
 omasnap smart
 ```
 
-These options choose what is initially selected. Completing a selection copies and
-pins it. Existing pins are ordinary compositor windows and remain visible in later
+These options choose what is initially selected. Completing a selection copies it
+and shows a preview that fades after 10 seconds of idle time unless kept. Existing
+previews and pins are ordinary compositor windows and remain visible in later
 screen captures; close or move them aside when they cover the next capture area.
 
 For annotation before any output, add `--editor overlay` or `--editor window`.
 The editor then controls whether the result is copied, saved, or both.
 
-Quick output skips the pin as well as the annotation editor. Add `--copy` to copy
+Quick output skips the preview as well as the annotation editor. Add `--copy` to copy
 only, `--save` to save only, or both flags to copy and save. Region and window captures output after selection;
 fullscreen captures output immediately. Quick output cannot be combined with `--file`,
 `--clipboard`, or `--pin`.
@@ -449,31 +451,30 @@ the other controls are hidden. Unpinning starts a fresh 10-second countdown.
 New captures always go in front of the existing stack, including kept shots.
 
 In the editor, `Ctrl+P` or `P` renders a capture that stays pinned. It writes a
-`pin-<pid>-<n>-<random>.png` under
-the runtime snapshot directory, and launches the same `omasnap` executable in
+`pin-<pid>-<n>-<random>.png` under the runtime snapshot directory, and launches
+the same `omasnap` executable in
 detached pin mode. Hyprland floats and pins each window on every workspace.
 Idle pins overlap in a compact deck at the focused monitor's bottom-right
 corner, newest in front. The front card stays straight; the cards behind it
 alternate a gentle 2–3° lean. Omasnap paints the rounded frames with the images
 so their edges tilt together, with transparent corners that take no input.
 Hover to straighten and fan them upward into fully exposed cards, wrapping into
-further columns when needed. The front card stays anchored; moving between cards keeps the fan
-open, and leaving folds it after a short delay. Placement accounts for
+further columns when needed. The front card stays anchored; moving between cards
+keeps the fan open, and leaving folds it after a short delay. Placement accounts for
 monitor origins, scaling and rotation, respecting bars on any edge and leaving
-a 14-pixel gap inside the usable area. It reserves each new target while the compositor
-animates it. If no on-screen slot fits, automatic packing leaves the window
+a 14-pixel gap inside the usable area. It reserves each new target while the
+compositor animates it. If no on-screen slot fits, automatic packing leaves the window
 where the compositor placed it.
 
 The preview is 200 logical pixels wide with the display's aspect ratio (height
 clamped to 50–400 pixels). It fills that frame with a top-anchored cover crop;
 copy, edit and drag-out still use the complete full-resolution image. Drag the
 image background, or use `Super`+left-drag, to move a pin. Dragging over the stack
-opens an insertion gap,
-and releasing snaps it into that gap. The fan stays open during a drag. Moving or
-closing a stacked pin closes the gap; pins dragged entirely clear of the stack
+opens an insertion gap, and releasing snaps it into that gap. The fan stays open
+during a drag. Moving or closing a stacked pin closes the gap; pins dragged entirely clear of the stack
 stay freely placed and are left alone when the stack folds or opens.
-A drop partly outside the usable area returns fully
-inside the monitor where the drag started, keeping the same 14-pixel edge gap.
+A drop partly outside the usable area returns fully inside the monitor where the
+drag started, keeping the same 14-pixel edge gap.
 
 Pinning neither touches the clipboard nor writes to the screenshot directory; it is a
 fourth output alongside copy, save, and copy-and-save. `Ctrl+P` / `P` closes the editor and releases
