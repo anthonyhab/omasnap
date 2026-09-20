@@ -53,8 +53,9 @@ void configureCaptureCommandLine(QCommandLineParser &parser, bool beforeQt) {
       "Omarchy.\n"
       "\n"
       "With no target, drag for a region, click a window, or click open "
-      "space for\nthe full focused monitor. Captures copy immediately and open a floating pin;\n"
-      "use the pin's Edit button to annotate, or --editor to edit before output.\n"
+      "space for\nthe full focused monitor. Captures copy immediately and show a preview for\n"
+      "10 seconds; use its pin button or Ctrl+P to keep it, or Edit to annotate.\n"
+      "Use --editor to edit before output.\n"
       "\n"
       "Only one capture overlay runs at a time. Starting omasnap again while "
       "an\noverlay is open dismisses it: the running instance is asked to "
@@ -104,6 +105,10 @@ void configureCaptureCommandLine(QCommandLineParser &parser, bool beforeQt) {
       QStringLiteral("Show an image as a floating window pinned on every workspace."),
       QStringLiteral("path"));
   parser.addOption(pinOption);
+  QCommandLineOption previewOption(
+      QStringLiteral("preview"), QString(), QStringLiteral("path"));
+  previewOption.setFlags(QCommandLineOption::HiddenFromHelp);
+  parser.addOption(previewOption);
   const QCommandLineOption editorOption(
       QStringLiteral("editor"),
       QStringLiteral("Edit before output, using overlay (fullscreen) or "
@@ -123,7 +128,7 @@ void configureCaptureCommandLine(QCommandLineParser &parser, bool beforeQt) {
   const QCommandLineOption scrollOption(
       QStringLiteral("scroll"),
       QStringLiteral("Capture a scrolling region and stitch it into one tall "
-                     "image, then copy and pin it."));
+                     "image, then copy it and show a timed preview."));
   parser.addOption(scrollOption);
   parser.addPositionalArgument(
       QStringLiteral("target"),
@@ -135,7 +140,8 @@ void configureCaptureCommandLine(QCommandLineParser &parser, bool beforeQt) {
 bool windowedEditorRequested(const QCommandLineParser &parser, bool defaultWindow) {
   const QString mode = parser.value(QStringLiteral("editor")).trimmed().toLower();
   const bool window = mode.isEmpty() ? defaultWindow : mode == QStringLiteral("window");
-  if (!window || parser.isSet(QStringLiteral("pin")))
+  if (!window || parser.isSet(QStringLiteral("pin")) ||
+      parser.isSet(QStringLiteral("preview")))
     return false;
   if (!parser.value(QStringLiteral("file")).isEmpty() ||
       parser.isSet(QStringLiteral("clipboard")))

@@ -7,8 +7,9 @@ It captures the focused monitor before mapping an exclusive layer-shell surface,
 editor never appears in its own screenshot. The editor retains annotations as movable,
 resizable vector layers and preserves the monitor's native pixels on scaled displays.
 
-Select a capture and it copies straight to the clipboard, with a floating pin for
-previewing, copying again, dragging into another app, or opening the editor on demand.
+Select a capture and it copies straight to the clipboard, with a floating preview for
+copying again, dragging into another app, or opening the editor on demand.
+The preview fades after 10 seconds; click its pin button or press `Ctrl+P` to keep it.
 
 [![Looping Omasnap demonstration](assets/omasnap.gif)](assets/omasnap.mp4)
 
@@ -17,8 +18,9 @@ previewing, copying again, dragging into another app, or opening the editor on d
 - Smart selection by default: drag a freeform region, click a window to crop
   it, or click open monitor space for the full monitor. Explicit region,
   window, fullscreen, and scrolling-region modes remain available.
-- Fresh captures copy immediately and appear as floating pins without taking
-  keyboard focus. Hover a pin for Edit, Copy, file drag, and Close controls.
+- Fresh captures copy immediately and show a floating preview for 10 seconds
+  without taking keyboard focus. Hover for Pin, Edit, Copy, file drag, and Close
+  controls. The pin button or `Ctrl+P` keeps the shot on screen.
 - A pointer-side readout that turns any drag into a ruler: the pointer position
   while the crosshair is idle, then the frame size in native export pixels while a
   region, a hovered window, or a crop handle is being sized.
@@ -308,7 +310,7 @@ change where screenshots land or what they are called, create
 # W switches a live editor between the two either way, and --editor
 # window|overlay overrides this per invocation.
 # This chooses the on-demand editor's presentation; fresh captures still
-# copy and pin unless --editor is explicitly passed.
+# copy and show a timed preview unless --editor is explicitly passed.
 mode = overlay
 # floating (default): a windowed editor asks the compositor to float it at
 # the capture's natural size. tiled: it joins the tiling layout instead.
@@ -433,13 +435,21 @@ into a scrolling capture. Explicit `region`, `windows`, `fullscreen`, and
 | `Ctrl+C` | Copy PNG only |
 | `Ctrl+S` | Save PNG only |
 | `Enter` | Copy and save (with a text layer selected: edit it) |
-| `P` | Pin the capture on screen and close the editor |
+| `Ctrl+P` / `P` | Keep the capture pinned on screen and close the editor |
 | `Esc` | Return to Select; press again to close |
 | Right-click | Return to Select; cancel active drawing |
 
-### Pinned captures
+### Capture previews and pins
 
-`P` renders the current capture, writes it to a `pin-<pid>-<n>-<random>.png` under
+Normal captures show a preview that fades after 10 seconds of idle time, replacing
+the completion notification. Hovering the stack or interacting with a preview
+pauses the countdown. Click the pin button or press `Ctrl+P` on a focused preview
+to keep it until you close it. Kept shots show a highlighted pin icon even when
+the other controls are hidden. Unpinning starts a fresh 10-second countdown.
+New captures always go in front of the existing stack, including kept shots.
+
+In the editor, `Ctrl+P` or `P` renders a capture that stays pinned. It writes a
+`pin-<pid>-<n>-<random>.png` under
 the runtime snapshot directory, and launches the same `omasnap` executable in
 detached pin mode. Hyprland floats and pins each window on every workspace.
 Idle pins overlap in a compact deck at the focused monitor's bottom-right
@@ -466,7 +476,7 @@ A drop partly outside the usable area returns fully
 inside the monitor where the drag started, keeping the same 14-pixel edge gap.
 
 Pinning neither touches the clipboard nor writes to the screenshot directory; it is a
-fourth output alongside copy, save, and copy-and-save. `P` closes the editor and releases
+fourth output alongside copy, save, and copy-and-save. `Ctrl+P` / `P` closes the editor and releases
 the single-instance lock immediately. Pins from separate captures accumulate as independent
 processes.
 
@@ -477,9 +487,11 @@ Closing an active or hovered pin focuses the next pin on that monitor, starting
 with the front of the remaining stack, so repeated `X` presses dismiss them
 without needing another mouse movement. Opening a pin for annotation keeps
 focus with the editor.
+Automatic expiry compacts the stack without transferring keyboard focus.
 
 | Input on a pin | Action |
 |---|---|
+| Pin button, `Ctrl+P` while focused | Keep on screen; press again to unpin and restart the countdown |
 | Edit button, `A` / `E` while hovered | Reopen the full-resolution PNG in Omasnap and replace the pin |
 | Link button, `L` / `F` while hovered | Copy the source file path |
 | Copy button, `C` while hovered, `Ctrl+C` | Copy the full-resolution PNG |

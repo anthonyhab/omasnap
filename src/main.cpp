@@ -135,7 +135,8 @@ int main(int argc, char **argv) {
   QCommandLineParser startupParser;
   configureCaptureCommandLine(startupParser, true);
   const bool startupParsed = startupParser.parse(rawArguments);
-  const bool pinInvocation = startupParsed && startupParser.isSet(QStringLiteral("pin"));
+  const bool pinInvocation = startupParsed &&
+      (startupParser.isSet(QStringLiteral("pin")) || startupParser.isSet(QStringLiteral("preview")));
   const bool windowedEditorProcess = startupParsed &&
       windowedEditorRequested(startupParser, loadEditorWindowMode(defaultConfigPath()));
   if (pinInvocation || windowedEditorProcess) {
@@ -209,17 +210,20 @@ int main(int argc, char **argv) {
     captureMode = CaptureEditor::CaptureMode::Region;
 
   const QStringList positional = parser.positionalArguments();
-  if (parser.isSet(QStringLiteral("pin"))) {
+  if (parser.isSet(QStringLiteral("pin")) || parser.isSet(QStringLiteral("preview"))) {
     if (!filePath.isEmpty() || clipboardInput || requestedModes > 0 ||
-        !positional.isEmpty() || quickOutputMode != QuickOutputMode::None) {
+        !positional.isEmpty() || quickOutputMode != QuickOutputMode::None ||
+        (parser.isSet(QStringLiteral("pin")) && parser.isSet(QStringLiteral("preview")))) {
       qCritical()
           << "Pinned mode cannot be combined with capture or edit targets";
       return 2;
     }
-    QString pinPath = QUrl(parser.value(QStringLiteral("pin"))).toLocalFile();
+    const bool preview = parser.isSet(QStringLiteral("preview"));
+    const QString target = parser.value(preview ? QStringLiteral("preview") : QStringLiteral("pin"));
+    QString pinPath = QUrl(target).toLocalFile();
     if (pinPath.isEmpty())
-      pinPath = parser.value(QStringLiteral("pin"));
-    return runPinnedCapture(pinPath);
+      pinPath = target;
+    return runPinnedCapture(pinPath, preview ? PinLifetime::Timed : PinLifetime::Persistent);
   }
   if (positional.size() > 1) {
     qCritical() << "Only one capture target may be specified";
@@ -270,7 +274,7 @@ int main(int argc, char **argv) {
   }
   if (!editingImage && quickOutputMode == QuickOutputMode::None &&
       !parser.isSet(QStringLiteral("editor")))
-    quickOutputMode = QuickOutputMode::CopyAndPin;
+    quickOutputMode = QuickOutputMode::CopyAndPreview;
   startupTimingMark("options resolved");
   if (!loadCaptureFonts())
     return 1;
@@ -359,7 +363,7 @@ int main(int argc, char **argv) {
   const bool instantFullscreenOutput =
       !editingImage && captureMode == CaptureEditor::CaptureMode::Fullscreen &&
       quickOutputMode != QuickOutputMode::None &&
-      quickOutputMode != QuickOutputMode::CopyAndPin;
+      quickOutputMode != QuickOutputMode::CopyAndPreview;
   if (!editingImage &&
       !captureMonitorPixels(capture.monitor, capture,
                             !instantFullscreenOutput, error)) {

@@ -164,7 +164,7 @@ public:
 
 private:
   enum class Phase { Select, Export, Edit };
-  enum class OutputMode { Copy, Save, Both, CopyAndPin };
+  enum class OutputMode { Copy, Save, Both, CopyAndPreview };
   enum class HighlighterMode { Snap, Normal };
 public:
   enum class Interaction {

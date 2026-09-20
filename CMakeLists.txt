@@ -55,6 +55,8 @@ add_library(omasnap-core STATIC
   src/recent-snaps.hpp
   src/output-config.cpp
   src/output-config.hpp
+  src/pin-expiry.cpp
+  src/pin-expiry.hpp
   src/overlay-chrome.cpp
   src/overlay-chrome.hpp
   src/eyedropper.cpp

@@ -3,16 +3,83 @@
 
 #include "capture.hpp"
 #include "pin-file.hpp"
+#include "pin-expiry.hpp"
 
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QImage>
+#include <QElapsedTimer>
+#include <QSignalSpy>
+#include <QTest>
 
 #include <fcntl.h>
 #include <sys/file.h>
 #include <unistd.h>
+
+bool runPinExpirySmoke(QString &error) {
+  PinExpiry timed(false), kept(true), pinnedLater(false), paused(false),
+      unpinned(true), keptDuringFade(false), hoveredDuringFade(false);
+  QSignalSpy timedClosed(&timed, &PinExpiry::expired);
+  QSignalSpy keptClosed(&kept, &PinExpiry::expired);
+  QSignalSpy pinnedClosed(&pinnedLater, &PinExpiry::expired);
+  QSignalSpy pausedClosed(&paused, &PinExpiry::expired);
+  QSignalSpy unpinnedClosed(&unpinned, &PinExpiry::expired);
+  QSignalSpy fadedKeptClosed(&keptDuringFade, &PinExpiry::expired);
+  QSignalSpy fadedHoveredClosed(&hoveredDuringFade, &PinExpiry::expired);
+  bool faded = false, pinnedInFade = false, pausedInFade = false;
+  qreal keptOpacity = 1.0, hoveredOpacity = 1.0;
+  QElapsedTimer elapsed, unpinnedElapsed;
+  qint64 closedAt = 0, unpinnedAt = 0;
+  QObject::connect(&timed, &PinExpiry::opacityChanged, &timed, [&](qreal opacity) {
+    faded = faded || (opacity > 0.0 && opacity < 1.0);
+  });
+  QObject::connect(&timed, &PinExpiry::expired, &timed, [&] { closedAt = elapsed.elapsed(); });
+  QObject::connect(&unpinned, &PinExpiry::expired, &unpinned, [&] { unpinnedAt = unpinnedElapsed.elapsed(); });
+  QObject::connect(&keptDuringFade, &PinExpiry::opacityChanged, &keptDuringFade, [&](qreal opacity) {
+    keptOpacity = opacity;
+    if (!pinnedInFade && opacity < 1.0) {
+      pinnedInFade = true;
+      keptDuringFade.setKept(true);
+    }
+  });
+  QObject::connect(&hoveredDuringFade, &PinExpiry::opacityChanged, &hoveredDuringFade, [&](qreal opacity) {
+    hoveredOpacity = opacity;
+    if (!pausedInFade && opacity < 1.0) {
+      pausedInFade = true;
+      hoveredDuringFade.setPaused(true);
+    }
+  });
+  elapsed.start();
+  for (PinExpiry *expiry : {&timed, &kept, &pinnedLater, &paused, &unpinned,
+                            &keptDuringFade, &hoveredDuringFade})
+    expiry->start();
+  QTest::qWait(200);
+  pinnedLater.setKept(true);
+  paused.setPaused(true);
+  unpinnedElapsed.start();
+  unpinned.setKept(false);
+  while ((timedClosed.isEmpty() || unpinnedClosed.isEmpty()) && elapsed.elapsed() < 13000)
+    QTest::qWait(20);
+  if (timedClosed.size() != 1 || unpinnedClosed.size() != 1 || !faded ||
+      closedAt < 10000 || unpinnedAt < 10000) {
+    error = QStringLiteral("A preview did not fade after ten seconds, or unpinning did not restart its lifetime");
+    return false;
+  }
+  if (!keptClosed.isEmpty() || !pinnedClosed.isEmpty() || !pausedClosed.isEmpty() ||
+      !fadedKeptClosed.isEmpty() || !fadedHoveredClosed.isEmpty() ||
+      !pinnedInFade || !pausedInFade || keptOpacity != 1.0 || hoveredOpacity != 1.0) {
+    error = QStringLiteral("Pinning or hovering failed to keep a preview visible, including during its fade");
+    return false;
+  }
+  hoveredDuringFade.setPaused(false);
+  if (!fadedHoveredClosed.wait(1000) || fadedHoveredClosed.size() != 1) {
+    error = QStringLiteral("Leaving a fading preview did not resume its expiry");
+    return false;
+  }
+  return true;
+}
 
 bool runPinLifecycleSmoke(QString &error) {
   const QString firstPath = pinnedSnapshotPath(987654);

@@ -7,6 +7,7 @@
 #include "pin.hpp"
 #include "capture.hpp"
 #include "pin-file.hpp"
+#include "pin-expiry.hpp"
 #include "pin-layout.hpp"
 #include "icons.hpp"
 
@@ -30,6 +31,7 @@
 #include <QPixmap>
 #include <QProcess>
 #include <QSocketNotifier>
+#include <QShowEvent>
 #include <QCloseEvent>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -478,10 +480,17 @@ StackSnapshot watchPinStack(const QString &title, const QRect &screen,
   return {screen, placement.pins, true, outside};
 }
 
+struct PinStackState {
+  qreal tilt = 0.0;
+  bool interacting = false;
+};
+
 class PinWindow final : public QWidget {
 public:
-  explicit PinWindow(QImage image, QString path, const QSize &frame)
-      : image_(std::move(image)), path_(std::move(path)), snapshotFile_(path_) {
+  explicit PinWindow(QImage image, QString path, const QSize &frame,
+                      PinLifetime lifetime = PinLifetime::Persistent)
+      : image_(std::move(image)), expiry_(lifetime == PinLifetime::Persistent),
+        path_(std::move(path)), snapshotFile_(path_) {
     setWindowTitle(pinTitle());
     setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
     setAttribute(Qt::WA_ShowWithoutActivating);
@@ -492,6 +501,14 @@ public:
     setFixedSize(frame);
     setAttribute(Qt::WA_AlwaysShowToolTips, true);
     setMouseTracking(true);
+    connect(&expiry_, &PinExpiry::opacityChanged, this, [this](qreal opacity) {
+      opacity_ = opacity;
+      update();
+    });
+    connect(&expiry_, &PinExpiry::expired, this, [this] {
+      expired_ = true;
+      close();
+    });
     dragWatchTimer_.setInterval(80);
     connect(&dragWatchTimer_, &QTimer::timeout, this,
             [this] { requestDragSnapshot(); });
@@ -514,10 +531,14 @@ public:
     connect(&stackStateReloadTimer_, &QTimer::timeout, this, [this] { reloadStackState(); });
     connect(&stackFiles_, &QFileSystemWatcher::directoryChanged, this,
             [this] { stackStateReloadTimer_.start(); });
-    connect(&stackStateWatcher_, &QFutureWatcher<qreal>::finished, this, [this] {
+    connect(&stackStateWatcher_, &QFutureWatcher<PinStackState>::finished, this, [this] {
       stackStateQueryPending_ = false;
-      if (!closing_)
-        setTilt(hovered_ || dragWatchTimer_.isActive() ? 0.0 : stackStateWatcher_.result());
+      if (!closing_) {
+        const auto state = stackStateWatcher_.result();
+        setTilt(hovered_ || dragWatchTimer_.isActive() ? 0.0 : state.tilt);
+        stackInteracting_ = state.interacting;
+        updateExpiryPause();
+      }
       if (stackStateReloadPending_)
         reloadStackState();
     });
@@ -555,6 +576,7 @@ public:
     cachedPins_ = pins;
     if (hovered_)
       openStack();
+    reloadStackState();
   }
 
   void openStack() {
@@ -603,6 +625,7 @@ public:
 
   void endStackDrag() {
     snapPending_ = false;
+    updateExpiryPause();
     static_cast<void>(QtConcurrent::run(&pinPool(),
         [title = windowTitle(), screen = dragScreen_, origin = dragOriginScreen_,
          free = dragFree_] {
@@ -683,6 +706,11 @@ public:
   [[nodiscard]] bool hasPinLock() const { return snapshotFile_.isLocked(); }
 
 protected:
+  void showEvent(QShowEvent *event) override {
+    QWidget::showEvent(event);
+    expiry_.start();
+  }
+
   void resizeEvent(QResizeEvent *event) override {
     QWidget::resizeEvent(event);
     updateCardMask();
@@ -699,6 +727,7 @@ protected:
     painter.setCompositionMode(QPainter::CompositionMode_Source);
     painter.fillRect(rect(), Qt::transparent);
     painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
+    painter.setOpacity(opacity_);
     painter.save();
     painter.setTransform(pinCardTransform(size(), tilt_));
     const QPainterPath card = cardPath();
@@ -718,6 +747,8 @@ protected:
     painter.setPen(QPen(hovered_ ? QColor(140, 179, 209, 210)
                                 : QColor(255, 255, 255, 75), 1.5));
     painter.drawPath(card);
+    if (expiry_.kept() && !hovered_)
+      drawControlButton(painter, pinButtonRect(), QStringLiteral("pin"), true);
     painter.restore();
     if (!toast_.isEmpty())
       paintToast(painter);
@@ -726,17 +757,19 @@ protected:
 
     drawControlButton(painter, dragButtonRect(), QStringLiteral("drag-handle"));
     drawControlButton(painter, editButtonRect(), QStringLiteral("edit"));
+    drawControlButton(painter, pinButtonRect(), QStringLiteral("pin"), expiry_.kept());
     drawControlButton(painter, pathButtonRect(), QStringLiteral("path"));
     drawControlButton(painter, copyButtonRect(), QStringLiteral("copy"));
     drawControlButton(painter, closeButtonRect(), QStringLiteral("close"));
   }
 
   void drawControlButton(QPainter &painter, const QRectF &rect,
-                         const QString &action) const {
+                         const QString &action, bool active = false) const {
     painter.setPen(Qt::NoPen);
-    painter.setBrush(QColor(12, 12, 16, 190));
+    painter.setBrush(active ? QColor(37, 58, 75, 235) : QColor(12, 12, 16, 190));
     painter.drawRoundedRect(rect, 6, 6);
-    drawToolbarIcon(painter, rect, action, {}, QColor(245, 245, 247));
+    drawToolbarIcon(painter, rect, action, {}, active ? QColor(140, 179, 209)
+                                                     : QColor(245, 245, 247));
   }
 
   void paintToast(QPainter &painter) const {
@@ -777,6 +810,10 @@ protected:
       }
       if (editButtonRect().contains(position)) {
         reopenInEditor();
+        return;
+      }
+      if (pinButtonRect().contains(position)) {
+        toggleKept();
         return;
       }
       if (QWindow *handle = windowHandle())
@@ -820,6 +857,7 @@ protected:
     snapSpot_ = {};
     openButtonWatch();
     dragWatchTimer_.start();
+    updateExpiryPause();
   }
 
   void observeDrag() {
@@ -1058,12 +1096,14 @@ protected:
     if (actionPending_)
       return;
     actionPending_ = true;
+    updateExpiryPause();
     auto *watcher = new QFutureWatcher<QString>(this);
     connect(watcher, &QFutureWatcher<QString>::finished, this,
             [this, watcher, message, reopening] {
       const QString error = watcher->result();
       watcher->deleteLater();
       actionPending_ = false;
+      updateExpiryPause();
       if (!error.isEmpty())
         showToast(error);
       else if (reopening) {
@@ -1124,7 +1164,7 @@ protected:
       auto *help = static_cast<QHelpEvent *>(event);
       const int control = controlRectAt(help->pos());
       if (control >= 0) {
-        QToolTip::showText(help->globalPos(), pinControlTip(control), this,
+        QToolTip::showText(help->globalPos(), pinControlTip(control, expiry_.kept()), this,
                            controlRect(control).toAlignedRect());
       } else {
         QToolTip::hideText();
@@ -1134,9 +1174,12 @@ protected:
     return QWidget::event(event);
   }
 
+
   // The six-dot control starts a file drag. Its optional PNG and thumbnail
   // payloads are prepared on a worker so pointer input never encodes images.
   void beginFileDrag() {
+    fileDragActive_ = true;
+    updateExpiryPause();
     dragFree_.reset();
     static_cast<void>(QtConcurrent::run(&pinPool(), [title = windowTitle()] {
       PinPlacement placement;
@@ -1154,6 +1197,7 @@ protected:
     if (!dragPreview_.isNull())
       drag.setPixmap(QPixmap::fromImage(dragPreview_));
     drag.exec(Qt::CopyAction | Qt::MoveAction);
+    fileDragActive_ = false;
     endStackDrag();
   }
 
@@ -1171,6 +1215,10 @@ protected:
     if (event->key() == Qt::Key_Meta) {
       watchCompositorDrag(event->modifiers() | Qt::MetaModifier);
       event->accept();
+      return;
+    }
+    if (event->key() == Qt::Key_P && event->modifiers() == Qt::ControlModifier) {
+      toggleKept();
       return;
     }
     // Closing transfers keyboard focus to the next pin, which need not have
@@ -1219,6 +1267,7 @@ protected:
 
   void closeEvent(QCloseEvent *event) override {
     closing_ = true;
+    expiry_.setPaused(true);
     stackStateReloadTimer_.stop();
     tiltAnimation_.stop();
     dragWatchTimer_.stop();
@@ -1228,7 +1277,7 @@ protected:
     // excluded by name rather than trusted to be gone.
     static_cast<void>(QtConcurrent::run(&pinPool(),
         [title = windowTitle(), screen = dragScreen_,
-         advanceFocus = !editorHandoff_ && (hovered_ || isActiveWindow())] {
+         advanceFocus = !expired_ && !editorHandoff_ && (hovered_ || isActiveWindow())] {
       PinPlacement placement;
       if (!placement.ready())
         return;
@@ -1247,6 +1296,7 @@ protected:
   void enterEvent(QEnterEvent *event) override {
     pointerWokeDuringWatch();
     hovered_ = true;
+    updateExpiryPause();
     setTilt(0.0, false);
     watchCompositorDrag(QGuiApplication::keyboardModifiers());
     openStack();
@@ -1257,6 +1307,7 @@ protected:
 
   void leaveEvent(QEvent *) override {
     hovered_ = false;
+    updateExpiryPause();
     hoveredControl_ = -1;
     setCursor(Qt::ArrowCursor);
     reloadStackState();
@@ -1264,6 +1315,19 @@ protected:
   }
 
 private:
+  void updateExpiryPause() {
+    expiry_.setPaused(closing_ || hovered_ || stackInteracting_ || actionPending_ ||
+                      fileDragActive_ || dragWatchTimer_.isActive() ||
+                      finishRequested_ || snapPending_);
+  }
+
+  void toggleKept() {
+    expiry_.setKept(!expiry_.kept());
+    QToolTip::hideText();
+    showToast(expiry_.kept() ? QStringLiteral("Pinned")
+                             : QStringLiteral("Fades after 10 seconds"));
+  }
+
   QPainterPath cardPath() const {
     QPainterPath path;
     path.addRoundedRect(QRectF(rect()).adjusted(1, 1, -1, -1), 7, 7);
@@ -1303,12 +1367,17 @@ private:
     stackStateQueryPending_ = true;
     stackStateReloadPending_ = false;
     stackStateWatcher_.setFuture(QtConcurrent::run(&pinPool(),
-        [path = stackStatePath_, title = windowTitle()] {
+        [path = stackStatePath_, title = windowTitle(), screen = dragScreen_]() -> PinStackState {
       QFile file(path);
       if (!file.open(QIODevice::ReadOnly))
-        return 0.0;
+        return {};
       const auto state = QJsonDocument::fromJson(file.readAll()).object();
-      return state.value(QStringLiteral("tilts")).toObject().value(title).toDouble();
+      const QJsonArray area = state.value(QStringLiteral("screen")).toArray();
+      const bool sameScreen = area == QJsonArray{screen.x(), screen.y(), screen.width(), screen.height()};
+      const bool free = state.value(QStringLiteral("free")).toObject().value(title).toBool();
+      const bool interacting = !state.value(QStringLiteral("drag")).toString().isEmpty() ||
+          (!free && sameScreen && !state.value(QStringLiteral("hover")).toString().isEmpty());
+      return {state.value(QStringLiteral("tilts")).toObject().value(title).toDouble(), interacting};
     }));
   }
 
@@ -1321,7 +1390,7 @@ private:
     });
   }
 
-  // The drag handle stands alone in the top-left; edit, path, copy, and
+  // The drag handle stands alone in the top-left; pin, edit, path, copy, and
   // close remain grouped in the top-right.
   [[nodiscard]] QRectF closeButtonRect() const { return controlRect(0); }
 
@@ -1333,18 +1402,20 @@ private:
 
   [[nodiscard]] QRectF dragButtonRect() const { return controlRect(4); }
 
+  [[nodiscard]] QRectF pinButtonRect() const { return controlRect(5); }
+
   [[nodiscard]] QRectF controlRect(int index) const {
     const qreal right = width() - kControlSize - kControlInset;
-    if (index < 4) {
-      return QRectF(right - index * (kControlSize + kControlGap),
+    if (index != 4) {
+      const int offset = index == 5 ? 4 : index;
+      return QRectF(right - offset * (kControlSize + kControlGap),
                     kControlInset, kControlSize, kControlSize);
     }
-    return QRectF(kControlInset, kControlInset, kDragButtonWidth,
-                  kControlSize);
+    return QRectF(kControlInset, kControlInset, kDragButtonWidth, kControlSize);
   }
 
   [[nodiscard]] int controlRectAt(const QPointF &position) const {
-    for (int index = 0; index < 5; ++index) {
+    for (int index = 0; index < 6; ++index) {
       if (controlRect(index).contains(position))
         return index;
     }
@@ -1352,12 +1423,17 @@ private:
   }
 
   QImage image_;
+  PinExpiry expiry_;
+  qreal opacity_ = 1.0;
+  bool expired_ = false;
+  bool stackInteracting_ = false;
+  bool fileDragActive_ = false;
   qreal tilt_ = 0.0;
   qreal tiltTarget_ = 0.0;
   QVariantAnimation tiltAnimation_;
   QFileSystemWatcher stackFiles_;
   QTimer stackStateReloadTimer_;
-  QFutureWatcher<qreal> stackStateWatcher_;
+  QFutureWatcher<PinStackState> stackStateWatcher_;
   QString stackStatePath_;
   bool stackStateQueryPending_ = false;
   bool stackStateReloadPending_ = false;
@@ -1401,14 +1477,14 @@ private:
 
 } // namespace
 
-int runPinnedCapture(const QString &path) {
+int runPinnedCapture(const QString &path, PinLifetime lifetime) {
   QImage image(path);
   if (image.isNull()) {
     qWarning("omasnap: could not load pinned image %s", qUtf8Printable(path));
     return 1;
   }
 
-  PinWindow window(std::move(image), path, pinFrameSize({}));
+  PinWindow window(std::move(image), path, pinFrameSize({}), lifetime);
   if (!window.hasPinLock()) {
     qWarning("omasnap: could not lock pinned image %s", qUtf8Printable(path));
     return 1;

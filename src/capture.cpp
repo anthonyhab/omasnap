@@ -1599,7 +1599,7 @@ bool copyImageToClipboard(const QImage &image, QString &error) {
 
 bool quickOutput(const QImage &image, QuickOutputMode mode, QString &error) {
   if (image.isNull() || mode == QuickOutputMode::None ||
-      mode == QuickOutputMode::CopyAndPin) {
+      mode == QuickOutputMode::CopyAndPreview) {
     error = QStringLiteral("Could not prepare screenshot snapshot");
     return false;
   }
@@ -1838,7 +1838,8 @@ bool savePinnedSnapshot(const QImage &image, const QString &path,
 }
 
 QString launchPinnedCapture(
-    const QImage &image, const QSize &logicalSize, bool copy, QString &error,
+    const QImage &image, const QSize &logicalSize, bool copy,
+    PinLifetime lifetime, QString &error,
     const std::function<bool(const QString &, const QStringList &)> &launcher) {
   prunePinnedSnapshots();
   const QString path = pinnedSnapshotPath(1);
@@ -1857,7 +1858,8 @@ QString launchPinnedCapture(
     return {};
   }
   const QString program = QCoreApplication::applicationFilePath();
-  const QStringList arguments{QStringLiteral("--pin"), path};
+  const QStringList arguments{lifetime == PinLifetime::Timed
+                                  ? QStringLiteral("--preview") : QStringLiteral("--pin"), path};
   if (!(launcher ? launcher(program, arguments)
                  : QProcess::startDetached(program, arguments))) {
     cleanup();

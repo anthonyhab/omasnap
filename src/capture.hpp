@@ -2,6 +2,7 @@
 #pragma once
 
 #include "cut.hpp"
+#include "pin.hpp"
 
 #include <cstdint>
 #include <functional>
@@ -56,7 +57,7 @@ enum class BackgroundStyle {
   Custom
 };
 enum class CanvasBoundaryMode { Framed, Overflow, Image };
-enum class QuickOutputMode { None, Copy, Save, Both, CopyAndPin };
+enum class QuickOutputMode { None, Copy, Save, Both, CopyAndPreview };
 
 enum class SpotlightShape { Ellipse, Rectangle, RoundedRectangle };
 enum class RedactionStyle { Solid, Pixelate };
@@ -388,7 +389,8 @@ bool removeEditorHandoff(const QString &path, const QString &token);
  *  Call on a worker: encoding, clipboard verification and process launch block.
  *  Returns the owned snapshot path, or removes it on failure. */
 [[nodiscard]] QString launchPinnedCapture(
-    const QImage &image, const QSize &logicalSize, bool copy, QString &error,
+    const QImage &image, const QSize &logicalSize, bool copy,
+    PinLifetime lifetime, QString &error,
     const std::function<bool(const QString &, const QStringList &)> &launcher = {});
 [[nodiscard]] bool saveTemporarySnapshot(const QImage &image, QString path,
                                          QString &error, int quality = -1);

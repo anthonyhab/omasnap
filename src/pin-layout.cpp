@@ -305,7 +305,7 @@ QRect pinMonitorWorkArea(const QJsonObject &monitor) {
                            -std::max(0, reserved.at(3).toInt()));
 }
 
-QString pinControlTip(int index) {
+QString pinControlTip(int index, bool kept) {
   switch (index) {
   case 0:
     return QStringLiteral("Close · X / Super+W / Esc / middle-click");
@@ -317,6 +317,9 @@ QString pinControlTip(int index) {
     return QStringLiteral("Annotate · A / E");
   case 4:
     return QStringLiteral("Drag this image out");
+  case 5:
+    return kept ? QStringLiteral("Unpin · Ctrl+P · fade after 10 seconds")
+                 : QStringLiteral("Keep on screen · Ctrl+P");
   default:
     return {};
   }

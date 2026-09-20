@@ -97,15 +97,15 @@ bool runPinLayoutSmoke(QString &error) {
 
   // Every control explains itself; an index outside the controls is empty.
   QSet<QString> tips;
-  for (int control = 0; control < 5; ++control) {
+  for (int control = 0; control < 6; ++control) {
     if (pinControlTip(control).isEmpty()) {
       error = QStringLiteral("A pin control has no tooltip");
       return false;
     }
     tips.insert(pinControlTip(control));
   }
-  if (tips.size() != 5 || !pinControlTip(5).isEmpty() ||
-      !pinControlTip(-1).isEmpty()) {
+  if (tips.size() != 6 || !pinControlTip(6).isEmpty() ||
+      !pinControlTip(-1).isEmpty() || pinControlTip(5, true) == pinControlTip(5, false)) {
     error = QStringLiteral("Pin control tooltips repeat or overflow");
     return false;
   }
@@ -113,18 +113,22 @@ bool runPinLayoutSmoke(QString &error) {
   const QList<QPair<QStringList, bool>> invocations{
       {{QStringLiteral("--pin"), QStringLiteral("image.png")}, true},
       {{QStringLiteral("--pin=image.png")}, true},
+      {{QStringLiteral("--preview=image.png")}, true},
+      {{QStringLiteral("-platform"), QStringLiteral("offscreen"),
+         QStringLiteral("--preview"), QStringLiteral("image.png")}, true},
       {{QStringLiteral("-platform"), QStringLiteral("offscreen"),
          QStringLiteral("--pin=image.png")}, true},
       {{QStringLiteral("--pin"), QStringLiteral("image.png"),
          QStringLiteral("-platformtheme"), QStringLiteral("gtk3")}, true},
       {{QStringLiteral("--"), QStringLiteral("--pin")}, false},
       {{QStringLiteral("--"), QStringLiteral("--pin=image.png")}, false},
+      {{QStringLiteral("--"), QStringLiteral("--preview=image.png")}, false},
       {{QStringLiteral("--file"), QStringLiteral("--pin")}, false}};
   for (const auto &[arguments, pinned] : invocations) {
     QCommandLineParser parser;
     configureCaptureCommandLine(parser, true);
     if (!parser.parse(QStringList{QStringLiteral("omasnap")} + arguments) ||
-        parser.isSet(QStringLiteral("pin")) != pinned) {
+        (parser.isSet(QStringLiteral("pin")) || parser.isSet(QStringLiteral("preview"))) != pinned) {
       error = QStringLiteral("Pin argv selected the wrong Wayland shell");
       return false;
     }

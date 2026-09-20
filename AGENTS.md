@@ -3,8 +3,9 @@
 Omasnap is a super fast, native Wayland screenshot and annotation overlay,
 built for [Omarchy](https://omarchy.org) on Hyprland. It captures region,
 window, or full monitor (plus a scrolling-region mode that stitches a taller
-page into one image), then copies it and opens a floating compositor pin. The
-pin opens an annotation editor on demand, with vector layers
+page into one image), then copies it and opens a floating compositor preview.
+The preview fades after 10 seconds unless kept with its pin button or Ctrl+P.
+It opens an annotation editor on demand, with vector layers
 (arrows, lines, freehand, highlighter, rectangles, ellipses, numbered
 markers, text, OCR). Finished captures go to clipboard,
 `~/Pictures/Screenshots`, or a floating capture pinned across workspaces.
@@ -27,7 +28,7 @@ change that touches the principle, not just this summary.
 - **Every operation is undoable.** The operation log is the source of
   truth; the visible image is rebuilt from it. Rendering for editing is a
   pure, repeatable function of that log — nothing is baked into the working
-  image as you draw. Fresh captures copy and pin by default; during editing,
+  image as you draw. Fresh captures copy and show a timed preview by default; during editing,
   output is applied only on **Copy**, **Save**, or both (or an explicit pin),
   which is the one moment a flattened image is produced. Redaction is the
   deliberate, documented exception: it must actually destroy pixels at

@@ -1565,12 +1565,12 @@ bool runPostCaptureChecks(QString &error) {
   using Mode = CaptureEditor::CaptureMode;
   for (const Mode mode : {Mode::Region, Mode::Smart, Mode::Window,
                           Mode::Fullscreen, Mode::Scroll}) {
-    CaptureEditor editor(capture, mode, QuickOutputMode::CopyAndPin);
+    CaptureEditor editor(capture, mode, QuickOutputMode::CopyAndPreview);
     QString pin;
     bool launchedOnWorker = false;
     editor.setProcessLauncherForTest([&](const QString &, const QStringList &args) {
       launchedOnWorker = QThread::currentThread() != qApp->thread();
-      if (args.size() != 2 || args.first() != QStringLiteral("--pin"))
+      if (args.size() != 2 || args.first() != QStringLiteral("--preview"))
         return false;
       pin = args.last();
       return true;
@@ -1611,13 +1611,55 @@ bool runPostCaptureChecks(QString &error) {
       return false;
     }
   }
+  // Explicit pinning stays on screen, including a text draft committed by
+  // Ctrl+P before the renderer takes its snapshot.
+  for (const bool textDraft : {false, true}) {
+    CaptureEditor editor(capture, Mode::File);
+    editor.setSuppressSnapshots(true);
+    QString pin;
+    editor.setProcessLauncherForTest([&](const QString &, const QStringList &args) {
+      if (args.size() != 2 || args.first() != QStringLiteral("--pin"))
+        return false;
+      pin = args.last();
+      return true;
+    });
+    editor.resize(800, 600);
+    editor.show();
+    if (textDraft) {
+      editor.activateWindow();
+      QApplication::processEvents();
+      QTest::keyClick(&editor, Qt::Key_T);
+      QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier,
+                         editor.editImageRectForTest().center().toPoint());
+      auto *draft = qobject_cast<QPlainTextEdit *>(QApplication::focusWidget());
+      if (!draft) {
+        error = QStringLiteral("Pin fixture could not open a text draft");
+        return false;
+      }
+      QTest::keyClicks(draft, QStringLiteral("Keep this annotation"));
+      QTest::keyClick(draft, Qt::Key_P, Qt::ControlModifier);
+    } else {
+      QTest::keyClick(&editor, Qt::Key_P, Qt::ControlModifier);
+    }
+    for (int attempt = 0; attempt < 500 && editor.isVisible(); ++attempt)
+      QTest::qWait(10);
+    const auto cleanup = qScopeGuard([&] {
+      QFile::remove(pin);
+      QFile::remove(operationLogPath(pin));
+    });
+    if (editor.isVisible() || pin.isEmpty() ||
+        (textDraft && editor.annotationCountForTest() != 1)) {
+      error = QStringLiteral("Ctrl+P did not keep the capture or lost its text draft");
+      return false;
+    }
+  }
   // Failures preserve the captured pixels in an editable recovery surface
   // and leave no abandoned pin document. Clipboard failure never launches.
   for (const bool clipboardFailure : {true, false}) {
     qputenv("OMASNAP_TEST_COPY_FAIL", clipboardFailure ? "1" : "");
     const QDir runtime(secureRuntimeDirectory());
     const auto before = runtime.entryList({QStringLiteral("pin-*")}, QDir::Files);
-    CaptureEditor editor(capture, Mode::Fullscreen, QuickOutputMode::CopyAndPin);
+    CaptureEditor editor(capture, Mode::Fullscreen, QuickOutputMode::CopyAndPreview);
     bool launchCalled = false;
     editor.setProcessLauncherForTest([&](const QString &, const QStringList &) {
       launchCalled = true;
@@ -10071,6 +10113,10 @@ int main(int argc, char **argv) {
   if (!runPinLifecycleSmoke(snapshotError)) {
     qWarning().noquote() << snapshotError;
     return 78;
+  }
+  if (!runPinExpirySmoke(snapshotError)) {
+    qWarning().noquote() << snapshotError;
+    return 211;
   }
   if (!runSpotlightAndSampleChecks(snapshotError)) {
     qWarning().noquote() << snapshotError;

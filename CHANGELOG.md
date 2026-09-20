@@ -17,9 +17,12 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 
 ### Changed
 
-- Fresh captures copy immediately and open a floating pin, with annotation
+- Fresh captures copy immediately and open a floating preview, with annotation
   available from its Edit button. Use `--editor overlay` or `--editor window`
   to annotate before output; `--copy`/`--save` bypass the pin.
+- Fade normal capture previews after 10 seconds of idle time. The pin button
+  or `Ctrl+P` keeps a shot on screen with a pin icon; new shots stay in front.
+  Hovering or interacting pauses expiry, and explicit editor pins stay until closed.
 - Pinned captures are floating compositor windows, with automatic packing
   and drag-to-stack placement, without taking focus when they appear.
 - Fold idle pins into a compact deck with a gentle alternating tilt; hover to

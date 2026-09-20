@@ -1041,10 +1041,10 @@ CaptureEditor::CaptureEditor(CaptureData capture, CaptureMode mode,
               update();
           });
   // Recents remain available during normal capture selection, including
-  // copy-and-pin. Explicit quick output and file inputs do not load them.
+  // copy-and-preview. Explicit quick output and file inputs do not load them.
   if (mode != CaptureMode::File &&
       (quickOutputMode_ == QuickOutputMode::None ||
-       quickOutputMode_ == QuickOutputMode::CopyAndPin)) {
+       quickOutputMode_ == QuickOutputMode::CopyAndPreview)) {
     startupTimingMark("recent shelf load dispatch starting");
     loadRecents();
     startupTimingMark("recent shelf load dispatched");
@@ -1071,6 +1071,10 @@ CaptureEditor::~CaptureEditor() {
 bool CaptureEditor::eventFilter(QObject *watched, QEvent *event) {
   if (watched == textEditor_ && event->type() == QEvent::KeyPress) {
     auto *key = static_cast<QKeyEvent *>(event);
+    if (key->key() == Qt::Key_P && key->modifiers() == Qt::ControlModifier) {
+      keyPressEvent(key);
+      return true;
+    }
     if (key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter) {
       if (key->modifiers().testFlag(Qt::ControlModifier)) {
         acceptText();
@@ -2603,7 +2607,7 @@ CaptureEditor::toolbarButtons(QVector<qreal> *groupDividers,
 
   // Actions: pin and finish/exit the capture.
   add(36, QStringLiteral("pin"), {},
-      QStringLiteral("Pin on screen · P · Ctrl+C on the pin copies it"));
+      QStringLiteral("Keep on screen · Ctrl+P / P · Ctrl+C on the pin copies it"));
   add(36, QStringLiteral("copy"), {}, QStringLiteral("Copy only · Ctrl+C"));
   add(40, QStringLiteral("both"), {}, QStringLiteral("Copy and save · Enter"));
   add(36, QStringLiteral("save"), {}, QStringLiteral("Save only · Ctrl+S"));
@@ -3303,7 +3307,7 @@ void CaptureEditor::pinSnapshot() {
             renderCapture(captureCopy, selection, annotations, background,
                           imageShadow, canvasBoundary, backdrop);
         result.path = launchPinnedCapture(image, selection.size().toSize(),
-                                          false, result.error, launcher);
+                                          false, PinLifetime::Persistent, result.error, launcher);
         return result;
       }));
 }
@@ -3381,8 +3385,8 @@ void CaptureEditor::enterExport() {
                                 ? OutputMode::Copy
                             : quickOutputMode_ == QuickOutputMode::Save
                                 ? OutputMode::Save
-                            : quickOutputMode_ == QuickOutputMode::CopyAndPin
-                                ? OutputMode::CopyAndPin
+                            : quickOutputMode_ == QuickOutputMode::CopyAndPreview
+                                ? OutputMode::CopyAndPreview
                                 : OutputMode::Both;
   // Fullscreen can arrive here during construction; launch only after the
   // caller has finished setting up the surface and its event loop.
@@ -3856,7 +3860,7 @@ void CaptureEditor::finish(OutputMode mode) {
   if (busy_ || selection_.isEmpty())
     return;
   busy_ = true;
-  setStatus(mode == OutputMode::Copy || mode == OutputMode::CopyAndPin
+  setStatus(mode == OutputMode::Copy || mode == OutputMode::CopyAndPreview
                                      ? QStringLiteral("Copying screenshot…")
                                      : QStringLiteral("Saving screenshot…"));
   // Everything the export needs is copied out so the render, the PNG encode
@@ -3882,9 +3886,9 @@ void CaptureEditor::finish(OutputMode mode) {
     const QImage image = renderCapture(captureCopy, selection, annotations,
                                        background, imageShadow,
                                        canvasBoundary, backdrop);
-    if (mode == OutputMode::CopyAndPin) {
+    if (mode == OutputMode::CopyAndPreview) {
       static_cast<void>(launchPinnedCapture(image, selection.size().toSize(),
-                                            true, result.error, launcher));
+                                            true, PinLifetime::Timed, result.error, launcher));
       return result;
     }
     if (!image.isNull())
@@ -3952,7 +3956,7 @@ void CaptureEditor::completeFinish(const FinishResult &result) {
     }
     snapshotPath_.clear();
   }
-  if (result.mode == OutputMode::CopyAndPin) {
+  if (result.mode == OutputMode::CopyAndPreview) {
     // The pin is the completion UI; a second notification would repeat it.
     close();
     return;
@@ -4106,6 +4110,13 @@ void CaptureEditor::keyPressEvent(QKeyEvent *event) {
     if (event->key() == Qt::Key_Escape)
       handleEscape();
     event->accept();
+    return;
+  }
+  if (phase_ == Phase::Edit && event->key() == Qt::Key_P &&
+      event->modifiers() == Qt::ControlModifier) {
+    if (textEditing())
+      acceptText();
+    pinSnapshot();
     return;
   }
   if (event->key() == Qt::Key_Shift && phase_ == Phase::Edit && dragging_) {

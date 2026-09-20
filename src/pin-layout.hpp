@@ -86,4 +86,4 @@ pinInsertionPlan(QVector<QPair<QString, QRect>> column,
 [[nodiscard]] QRect pinMonitorWorkArea(const QJsonObject &monitor);
 
 /** The hover tip for a pin control, empty outside the known controls. */
-[[nodiscard]] QString pinControlTip(int index);
+[[nodiscard]] QString pinControlTip(int index, bool kept = false);
