@@ -349,9 +349,12 @@ bool spawnScrollInjector(std::shared_ptr<std::atomic<bool>> stop,
                          std::shared_ptr<stitch::CaptureHandshake> handshake,
                          int parkX, int parkY, stitch::Axis axis,
                          const QString &outputName, QString &error) {
-  // Validate the backends synchronously so the caller gets a useful error;
-  // the injection itself runs off the UI thread.
+  // Called on a setup worker: probing may block, but never owns UI state.
+  if (stop->load(std::memory_order_acquire))
+    return false;
   const std::optional<bool> naturalScroll = hyprlandNaturalScroll();
+  if (stop->load(std::memory_order_acquire))
+    return false;
   auto uinput = std::make_shared<UinputMouse>();
   bool haveUinput = false;
   if (naturalScroll) {
@@ -371,6 +374,8 @@ bool spawnScrollInjector(std::shared_ptr<std::atomic<bool>> stop,
   // uinput is unavailable).
   QString wlrError;
   std::shared_ptr<WlrPointer> wlr = connectWlrPointer(outputName, wlrError);
+  if (stop->load(std::memory_order_acquire))
+    return false;
   if (!wlr && !haveUinput) {
     error = wlrError;
     return false;
@@ -394,9 +399,9 @@ bool spawnScrollInjector(std::shared_ptr<std::atomic<bool>> stop,
                natural = naturalScroll.value_or(false)] {
     // Let the overlay's input-region commit land, then settle the device and
     // park inside the selection so wheel events hit the page.
-    sleepMs(kInputRegionSettleMs);
-    if (haveUinput)
-      sleepMs(kUinputDeviceSettleMs);
+    if (!sleepUnlessStopped(kInputRegionSettleMs, *stop) ||
+        (haveUinput && !sleepUnlessStopped(kUinputDeviceSettleMs, *stop)))
+      return;
     if (wlr)
       wlr->park(parkX, parkY);
     if (haveUinput && !uinput->nudge()) {

@@ -16,6 +16,7 @@
 #include "capture.hpp"
 #include "overlay-chrome.hpp"
 #include "stitch.hpp"
+#include "scroll-inject.hpp"
 
 #include <QFuture>
 #include <QImage>
@@ -31,6 +32,7 @@
 #include <algorithm>
 #include <atomic>
 #include <memory>
+#include <functional>
 #include <utility>
 #include <optional>
 
@@ -133,7 +135,9 @@ private:
   /// the worker has stopped.
   struct Worker;
 
+  friend bool runScrollStartupSmoke(QString &error);
   void startCapture(Mode mode, stitch::Axis axis);
+  void startInjector(bool continuing);
   void stopWorker();
   void finishCapture();
   void cancel();
@@ -224,6 +228,8 @@ private:
   std::atomic<bool> stopRequested_{false};
   /// Auto mode: the injection worker's shared stop flag (it also sets this
   /// itself on any exit) and the capture handshake.
+  // Copied into each setup job; no panel state is accessed on that worker.
+  std::function<decltype(spawnScrollInjector)> injectorStarter_ = spawnScrollInjector;
   std::shared_ptr<std::atomic<bool>> injectorStop_;
   std::shared_ptr<stitch::CaptureHandshake> handshake_;
 };

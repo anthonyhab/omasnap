@@ -45,6 +45,9 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 
 ### Fixed
 
+- Keep auto-scroll Start and Continue responsive while injection backends are
+  probed, and cancel pending setup when leaving the capture.
+
 - Preserve monitor scaling when opening scrolling captures for annotation
   or from a floating preview, so 2× captures do not appear twice as large.
   Retain the original pixel dimensions when the logical size rounds.

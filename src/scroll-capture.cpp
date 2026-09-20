@@ -13,6 +13,7 @@
 #include <QDir>
 #include <QEventLoop>
 #include <QFile>
+#include <QFutureWatcher>
 #include <QGuiApplication>
 #include <QKeyEvent>
 #include <QMouseEvent>
@@ -356,34 +357,62 @@ void ScrollCapturePanel::startCapture(Mode mode, stitch::Axis axis) {
     });
     return;
   }
-  // Automatic: the injection worker scrolls one acknowledged tick at a time.
+  startInjector(false);
+}
+
+void ScrollCapturePanel::startInjector(bool continuing) {
   injectorStop_ = std::make_shared<std::atomic<bool>>(false);
   handshake_ = std::make_shared<stitch::CaptureHandshake>();
+  const auto stop = injectorStop_;
+  const auto handshake = handshake_;
   const auto [parkX, parkY] = autoScrollParkPoint();
-  setStatus(QStringLiteral("Auto-scrolling… · keep the pointer still · "
-                           "Done stitches it"));
-  // Spawn after this frame's commit so the input-region hole and the released
-  // keyboard land before the pointer warp.
-  QTimer::singleShot(
-      kChromeSettleMs, this,
-      [this, parkX, parkY] {
-        if (phase_ != Phase::Capturing)
-          return;
-        QString spawnError;
-        if (!spawnScrollInjector(injectorStop_, handshake_, parkX, parkY,
-                                 axis_, monitor_.name, spawnError)) {
-          // Fall back to manual capture on the same region and axis.
-          qInfo().noquote()
-              << QStringLiteral("scroll: injector unavailable (%1)").arg(spawnError);
-          mode_ = Mode::Manual;
-          setStatus(QStringLiteral("Auto-scroll unavailable · scroll "
-                                   "manually · Done stitches"),
-                    true);
-          workerFuture_ = QtConcurrent::run([this] { captureLoop(); });
+  setStatus(QStringLiteral("Starting auto-scroll… · keep the pointer still"));
+  // Let the input hole and released keyboard reach the compositor first.
+  // The token also invalidates a pending timer when Back/Cancel is pressed.
+  QTimer::singleShot(kChromeSettleMs, this,
+                    [this, stop, handshake, parkX, parkY, continuing] {
+    if (released_ || phase_ != Phase::Capturing || injectorStop_ != stop ||
+        stop->load(std::memory_order_acquire))
+      return;
+    auto *watcher = new QFutureWatcher<QString>(this);
+    connect(watcher, &QFutureWatcher<QString>::finished, this,
+            [this, watcher, stop, continuing] {
+      const QString error = watcher->result();
+      watcher->deleteLater();
+      // Setup owns only copied values and can outlive this capture. A stale
+      // completion must never start a loop against a replaced Worker.
+      if (released_ || phase_ != Phase::Capturing || injectorStop_ != stop ||
+          stopRequested_)
+        return;
+      if (!error.isEmpty()) {
+        if (continuing) {
+          autoStalled_ = true;
+          setStatus(QStringLiteral("Could not start auto-scroll again: %1")
+                        .arg(error), true);
           return;
         }
-        workerFuture_ = QtConcurrent::run([this] { autoCaptureLoop(); });
-      });
+        qInfo().noquote()
+            << QStringLiteral("scroll: injector unavailable (%1)").arg(error);
+        mode_ = Mode::Manual;
+        setStatus(QStringLiteral("Auto-scroll unavailable · scroll "
+                                 "manually · Done stitches"), true);
+        workerFuture_ = QtConcurrent::run([this] { captureLoop(); });
+        return;
+      }
+      setStatus(QStringLiteral("Auto-scrolling… · keep the pointer still · "
+                               "Done stitches it"));
+      workerFuture_ = QtConcurrent::run([this] { autoCaptureLoop(); });
+    });
+    watcher->setFuture(QtConcurrent::run(
+        [starter = injectorStarter_, stop, handshake, parkX, parkY,
+         axis = axis_, output = monitor_.name] {
+      QString error;
+      if (!starter(stop, handshake, parkX, parkY, axis, output, error) &&
+          error.isEmpty())
+        error = QStringLiteral("No scroll injector available");
+      return error;
+    }));
+  });
 }
 
 void ScrollCapturePanel::stopWorker() {
@@ -778,22 +807,7 @@ void ScrollCapturePanel::continueCapture() {
   setKeyboardGrab(false);
   worker_->autoSession.resumeFromEnd(); // a stop looks just like an end
   worker_->lastCycle = 0; // a new handshake counts from one again
-  injectorStop_ = std::make_shared<std::atomic<bool>>(false);
-  handshake_ = std::make_shared<stitch::CaptureHandshake>();
-  const auto [parkX, parkY] = autoScrollParkPoint();
-  setStatus(QStringLiteral("Auto-scrolling… · keep the pointer still · "
-                           "Done stitches it"));
-  update();
-  QString spawnError;
-  if (!spawnScrollInjector(injectorStop_, handshake_, parkX, parkY, axis_,
-                           monitor_.name, spawnError)) {
-    autoStalled_ = true;
-    setStatus(QStringLiteral("Could not start auto-scroll again: %1")
-                  .arg(spawnError),
-              true);
-    return;
-  }
-  workerFuture_ = QtConcurrent::run([this] { autoCaptureLoop(); });
+  startInjector(true);
 }
 
 void ScrollCapturePanel::returnToModeChoice() {
