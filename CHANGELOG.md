@@ -12,6 +12,8 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 
 ### Changed
 
+- Match pins, editor controls, tooltips, window-selection highlights, and crop
+  outlines to Omarchy's theme files, with live updates when the theme changes.
 - Hide the cursor and drag handles while placing arrow heads, tails, bends, and
   line endpoints; restore them on release or cancellation.
 

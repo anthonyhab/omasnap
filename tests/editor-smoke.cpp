@@ -8,6 +8,7 @@
 #include "overlay-chrome.hpp"
 #include "cli-path.hpp"
 #include "clipboard-smoke.hpp"
+#include "chrome-theme-smoke.hpp"
 #include "cut-mapping-smoke.hpp"
 #include "cut-smoke.hpp"
 #include "editor.hpp"
@@ -51,6 +52,7 @@
 #include <QUrl>
 #include <QWheelEvent>
 #include <QWindow>
+#include <Qt>
 #include <QtTest/QTest>
 
 #include <algorithm>
@@ -12228,6 +12230,10 @@ int main(int argc, char **argv) {
   if (!runInstanceLockSmoke(instanceError)) {
     qWarning().noquote() << instanceError;
     return 85;
+  }
+  if (!runChromeThemeSmoke(outputRoot, snapshotError)) {
+    qWarning().noquote() << snapshotError;
+    return 140;
   }
   return 0;
 }

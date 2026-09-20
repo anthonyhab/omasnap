@@ -75,6 +75,9 @@ pause its countdown; the pin button, `Ctrl+P`, or `T` while hovered keeps it on 
   along the right edge; hover to fan them out, click one to reopen it in the editor
   with its layers still editable instead of taking a new screenshot.
 - Correct native-pixel export on fractional or integer-scaled monitors.
+- Pins, editor controls, tooltips, and selection outlines follow the current
+  Omarchy theme, including live theme changes. Screenshot pixels, annotation
+  colors, and exported backdrops keep their chosen colors.
 
 ## Platform scope
 
@@ -304,6 +307,15 @@ overlay shows them as a small stack of cards on the right; hovering fans them ou
 and clicking one reopens that capture in the editor, undo history intact, in place
 of a new screenshot. Finishing a reopened capture replaces its shelf entry.
 
+### Theme
+
+Omasnap reads the current Omarchy palette from
+`~/.local/state/omarchy/current/theme/colors.toml` and uses the surface, control,
+tooltip, and border colors in `shell.toml` when present. Theme changes update
+open windows automatically; missing or invalid values use readable defaults.
+Chrome fonts stay pinned, and loading colors does not load a desktop Qt theme
+plugin or add a startup dependency.
+
 ### Configuration (optional)
 
 Omasnap has no settings UI and runs fine with no config at all. If you want to
@@ -463,7 +475,7 @@ the completion notification. Hovering the stack, dragging, and in-progress
 actions pause the countdown; it resumes when the preview is idle again. Clicking,
 scrolling, copying, or editing does not pin the preview. The pin button,
 `Ctrl+P` on a focused preview, or `T` ("tack") while hovered keeps it until closed.
-`T` remains the Text shortcut in the editor. Kept shots show a highlighted
+`T` remains the Text shortcut in the editor. Kept shots show a
 pin icon even when the other controls are hidden. Unpinning starts a fresh
 10-second countdown.
 New captures always go in front of the existing stack, including kept shots.
@@ -548,7 +560,7 @@ part of a layer.
 Creation tools return to Select after one placement without selecting the new layer. In
 Select mode, lines and straight arrows show two endpoint handles; curved and double arrows
 add an on-curve handle for bending the arc (hold `Shift` to keep that bend centered). Other
-layers show a selection boundary. The eight blue/white handles outside the image recrop
+layers show a selection boundary. The eight handles outside the image recrop
 its corners or edges. The image stays in place while dragging a crop handle, then
 re-centers when released. After the canvas grows, those crop handles remain on the
 original source frame.
