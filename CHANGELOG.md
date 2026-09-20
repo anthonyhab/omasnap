@@ -5,6 +5,8 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 
 ## Unreleased
 
+## 1.21.0
+
 ### Added
 
 - Standard, Pointy, Curved, and Double arrow styles, with editable bends.
@@ -98,6 +100,7 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 - Keep the toolbar, capture tabs, hotkey legend, and canvas geometry aligned.
 - Remove the pixels actually covered by a cut-band drag.
 
-[Unreleased changes](https://github.com/omacom/omasnap/compare/v1.20.1...main)
+[Unreleased changes](https://github.com/omacom/omasnap/compare/v1.21.0...main)
+· [1.21.0 changes](https://github.com/omacom/omasnap/compare/v1.20.1...v1.21.0)
 · [1.20.1 changes](https://github.com/omacom/omasnap/compare/v1.20.0...v1.20.1)
 · [1.20.0 changes](https://github.com/omacom/omasnap/compare/v1.19.1...v1.20.0)
