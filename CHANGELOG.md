@@ -10,6 +10,11 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 - Press `T` ("tack") while hovering a preview to pin or unpin it, alongside
   the pin button and `Ctrl+P`. The editor keeps `T` for Text.
 
+### Changed
+
+- Hide the cursor and drag handles while placing arrow heads, tails, bends, and
+  line endpoints; restore them on release or cancellation.
+
 ### Fixed
 
 - Suppress the armed tool while moving or resizing an annotation, including
