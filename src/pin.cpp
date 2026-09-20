@@ -1333,6 +1333,9 @@ protected:
     if (hovered_) {
       if (event->modifiers() == Qt::NoModifier) {
         switch (event->key()) {
+        case Qt::Key_T:
+          toggleKept();
+          return;
         case Qt::Key_A:
         case Qt::Key_E:
           reopenInEditor();

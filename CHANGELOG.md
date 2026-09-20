@@ -5,6 +5,11 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 
 ## Unreleased
 
+### Added
+
+- Press `T` ("tack") while hovering a preview to pin or unpin it, alongside
+  the pin button and `Ctrl+P`. The editor keeps `T` for Text.
+
 ### Fixed
 
 - Suppress the armed tool while moving or resizing an annotation, including

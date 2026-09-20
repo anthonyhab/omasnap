@@ -118,6 +118,31 @@ bool runPinInteractionSmoke(QString &error) {
     error = QStringLiteral("Ctrl+P did not keep the preview");
     return false;
   }
+  QApplication::sendEvent(&window, &enter);
+  QTest::keyClick(&window, Qt::Key_T);
+  if (!expectTimed(QStringLiteral("Unpinning with T")))
+    return false;
+  QTest::keyClick(&window, Qt::Key_T, Qt::ControlModifier);
+  if (!expectTimed(QStringLiteral("Ctrl+T")))
+    return false;
+  QEvent leave(QEvent::Leave);
+  QApplication::sendEvent(&window, &leave);
+  QTest::keyClick(&window, Qt::Key_T);
+  if (!expectTimed(QStringLiteral("T without hovering")))
+    return false;
+  QApplication::sendEvent(&window, &enter);
+  QTest::keyClick(&window, Qt::Key_T);
+  if (!isKept()) {
+    error = QStringLiteral("T did not keep the hovered preview");
+    return false;
+  }
+  QKeyEvent repeat(QEvent::KeyPress, Qt::Key_T, Qt::NoModifier,
+                   QStringLiteral("t"), true);
+  QApplication::sendEvent(&window, &repeat);
+  if (!isKept()) {
+    error = QStringLiteral("Holding T repeatedly toggled the preview pin");
+    return false;
+  }
   QToolTip::hideText();
   return true;
 }

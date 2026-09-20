@@ -10,7 +10,7 @@ resizable vector layers and preserves the monitor's native pixels on scaled disp
 Select a capture and it copies straight to the clipboard, with a floating preview for
 copying again, dragging into another app, or opening the editor on demand.
 The preview fades after 10 seconds of idle time. Hovering and unfinished actions
-pause its countdown; only the pin button or `Ctrl+P` keeps it on screen.
+pause its countdown; the pin button, `Ctrl+P`, or `T` while hovered keeps it on screen.
 
 [![Looping Omasnap demonstration](assets/omasnap.gif)](assets/omasnap.mp4)
 
@@ -21,7 +21,7 @@ pause its countdown; only the pin button or `Ctrl+P` keeps it on screen.
   window, fullscreen, and scrolling-region modes remain available.
 - Fresh captures copy immediately and show a floating preview for 10 seconds
   without taking keyboard focus. Hover for Pin, Edit, Copy, file drag, and Close
-  controls. Use the pin button or `Ctrl+P` to keep it on screen.
+  controls. Use the pin button, `Ctrl+P`, or `T` while hovered to keep it on screen.
 - A pointer-side readout that turns any drag into a ruler: the pointer position
   while the crosshair is idle, then the frame size in native export pixels while a
   region, a hovered window, or a crop handle is being sized.
@@ -215,8 +215,8 @@ Drag a region, then pick a direction: **Scroll ↓ / →** scrolls the page
 yourself while omasnap captures each step, and **Auto ↓ / →** scrolls it for
 you, one acknowledged notch at a time, stopping when the page stops moving.
 The frames are aligned and stitched into one image, copied, and shown in a timed
-preview. Keep it with the pin button or `Ctrl+P`, or open its editor to annotate
-it; `Ctrl`+wheel zooms and the wheel scrolls it.
+preview. Keep it with the pin button, `Ctrl+P`, or `T` while hovered, or open its
+editor to annotate it; `Ctrl`+wheel zooms and the wheel scrolls it.
 
 Positional capture modes are also accepted:
 
@@ -459,8 +459,9 @@ region after changing the display layout.
 Normal captures show a preview that fades after 10 seconds of idle time, replacing
 the completion notification. Hovering the stack, dragging, and in-progress
 actions pause the countdown; it resumes when the preview is idle again. Clicking,
-scrolling, copying, or editing does not pin the preview. Only the pin button or
-`Ctrl+P` on a focused preview keeps it until closed. Kept shots show a highlighted
+scrolling, copying, or editing does not pin the preview. The pin button,
+`Ctrl+P` on a focused preview, or `T` ("tack") while hovered keeps it until closed.
+`T` remains the Text shortcut in the editor. Kept shots show a highlighted
 pin icon even when the other controls are hidden. Unpinning starts a fresh
 10-second countdown.
 New captures always go in front of the existing stack, including kept shots.
@@ -519,7 +520,7 @@ Automatic expiry compacts the stack without transferring keyboard focus.
 
 | Input on a pin | Action |
 |---|---|
-| Pin button, `Ctrl+P` while focused | Keep on screen; press again to unpin and restart the countdown |
+| Pin button, `Ctrl+P` while focused, `T` while hovered | Keep on screen; press again to unpin and restart the countdown |
 | Edit button, `A` / `E` while hovered | Annotate the capture while keeping the same pin |
 | Link button, `L` / `F` while hovered | Save the capture if needed and copy its file path |
 | Copy button, `C` while hovered, `Ctrl+C` | Copy the full-resolution PNG |
