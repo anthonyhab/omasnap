@@ -301,7 +301,7 @@ void ScrollCapturePanel::setKeyboardGrab(bool grab) {
   // overlay eligible for keyboard focus: None prevents Escape from reaching
   // it after scrolling. Pointer events restore Exclusive over the chrome;
   // entering the live region or leaving the surface releases it again.
-  if (!layer_ || keyboardGrabbed_ == grab)
+  if (released_ || !layer_ || keyboardGrabbed_ == grab)
     return;
   keyboardGrabbed_ = grab;
   layer_->setKeyboardInteractivity(

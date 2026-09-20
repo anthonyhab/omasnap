@@ -7,6 +7,9 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 
 ### Fixed
 
+- Preserve the editor's keyboard focus when late pointer events arrive from a
+  dismissed scrolling panel.
+
 - Keep the scrolling overlay eligible for keyboard focus after releasing its
   exclusive grab, so Escape remains available when the overlay has focus.
 

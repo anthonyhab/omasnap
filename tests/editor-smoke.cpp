@@ -3,6 +3,7 @@
 /** @fileoverview Exercises capture editor behavior without a live compositor.
  */
 #include "capture.hpp"
+#include "scroll-focus-smoke.hpp"
 #include "output-config.hpp"
 #include "overlay-chrome.hpp"
 #include "cli-path.hpp"
@@ -10249,6 +10250,10 @@ int main(int argc, char **argv) {
     return 0;
   }
   QString snapshotError;
+  if (!runScrollFocusSmoke(snapshotError)) {
+    qWarning().noquote() << snapshotError;
+    return 224;
+  }
   if (!runAreaLastRegionSmoke(application, snapshotError)) {
     qWarning().noquote() << snapshotError;
     return 119;

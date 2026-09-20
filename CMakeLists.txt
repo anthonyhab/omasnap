@@ -143,6 +143,8 @@ target_precompile_headers(omasnap REUSE_FROM omasnap-core)
 
 if(BUILD_TESTING)
 qt_add_executable(omasnap-smoke
+  tests/scroll-focus-smoke.cpp
+  tests/scroll-focus-smoke.hpp
   tests/editor-smoke.cpp
   tests/clipboard-smoke.cpp
   tests/clipboard-smoke.hpp
