@@ -7,6 +7,8 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 
 ### Fixed
 
+- Suppress the armed tool while moving or resizing an annotation, including
+  the cut-band preview, and keep that tool ready for the next canvas gesture.
 - Keep screenshot content anchored while dragging crop handles, then re-center
   the image on release.
 - Preserve the editor's keyboard focus when late pointer events arrive from a
