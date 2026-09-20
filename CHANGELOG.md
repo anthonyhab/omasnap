@@ -17,6 +17,8 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 
 ### Fixed
 
+- Keep previews and pins frameless at the compositor level across theme changes,
+  preventing a second outline around the frame Omasnap draws.
 - Suppress the armed tool while moving or resizing an annotation, including
   the cut-band preview, and keep that tool ready for the next canvas gesture.
 - Keep screenshot content anchored while dragging crop handles, then re-center

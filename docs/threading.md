@@ -165,6 +165,8 @@ a small worker read when that state changes; it adds no idle polling. The UI
 animates the painted card and its input region inside the existing window bounds.
 Pin frames are drawn with their images so the outline can rotate too; the runtime
 pin rule disables the compositor's rectangular border, shadow and background blur.
+The initial placement worker also sets these as per-window properties, preserving
+the frameless surface across compositor and theme reloads without polling.
 
 Returning from annotation renders and saves the pin preview and operation log
 on a worker. A filesystem watch on the completed log starts a worker to decode
