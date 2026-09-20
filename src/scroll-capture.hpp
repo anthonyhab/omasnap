@@ -137,6 +137,7 @@ private:
 
   friend bool runScrollStartupSmoke(QString &error);
   void startCapture(Mode mode, stitch::Axis axis);
+  void startManualCapture();
   void startInjector(bool continuing);
   void stopWorker();
   void finishCapture();
@@ -225,6 +226,9 @@ private:
 
   std::unique_ptr<Worker> worker_;
   QFuture<void> workerFuture_;
+  // Changed only after the capture worker stops, so that worker can safely
+  // copy it when queueing a notice. Deferred starts share the same identity.
+  quint64 captureGeneration_ = 0;
   std::atomic<bool> stopRequested_{false};
   /// Auto mode: the injection worker's shared stop flag (it also sets this
   /// itself on any exit) and the capture handshake.

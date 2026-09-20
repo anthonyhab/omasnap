@@ -45,6 +45,12 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 
 ### Fixed
 
+- Cancelling automatic scroll capture interrupts frame-settling retries instead
+  of waiting several seconds for the retry window to expire.
+
+- Ignore delayed starts and queued status updates from stopped scrolling
+  captures when switching modes or choosing a new region.
+
 - Keep auto-scroll Start and Continue responsive while injection backends are
   probed, and cancel pending setup when leaving the capture.
 

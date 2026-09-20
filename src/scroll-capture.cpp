@@ -128,18 +128,23 @@ struct ScrollCapturePanel::Worker {
   /// Reads frames until the region has settled after a scroll tick (see the
   /// kMotionWaitMs block). `before` is the region as it was before the tick;
   /// null on the first cycle. Returns false only when the session is dead or
-  /// nothing could be grabbed at all; `error` describes it.
+  /// nothing could be grabbed at all, or cancellation was requested.
   [[nodiscard]] bool acquireSettledFrame(const QImage &before, QImage &settled,
-                                         QString &error) {
+                                         QString &error,
+                                         const std::atomic<bool> &stop) {
     QElapsedTimer clock;
     clock.start();
     bool moved = before.isNull();
     QImage last;
     int failures = 0;
-    while (true) {
+    while (!stop.load(std::memory_order_acquire)) {
       QImage frame;
       const bool ok = output.grab(frame, error, moved ? kSettleGrabMs
                                                        : kSettleGrabMs / 2);
+      // Cancellation joins this worker on the GUI thread. Do not keep
+      // retrying damage-driven grabs for the whole settling window.
+      if (stop.load(std::memory_order_acquire))
+        return false;
       if (!ok) {
         if (output.sessionStopped())
           return false;
@@ -177,6 +182,7 @@ struct ScrollCapturePanel::Worker {
         return true;
       }
     }
+    return false;
   }
 };
 
@@ -232,10 +238,12 @@ void ScrollCapturePanel::setStatus(const QString &status, bool warning) {
 
 void ScrollCapturePanel::postStalled() {
   // Called from the worker thread when an auto capture stops before the end.
+  const quint64 generation = captureGeneration_;
   QMetaObject::invokeMethod(
       this,
-      [this] {
-        if (phase_ != Phase::Capturing || mode_ != Mode::Auto)
+      [this, generation] {
+        if (released_ || generation != captureGeneration_ ||
+            phase_ != Phase::Capturing || mode_ != Mode::Auto)
           return;
         autoStalled_ = true;
         applyInputRegion(); // the row grew by a pill
@@ -248,10 +256,12 @@ void ScrollCapturePanel::postStatus(const QString &status, bool warning) {
   // Called from the worker thread; hop to the UI thread. A queued update can
   // arrive after Done stopped the worker, and it must not overwrite the
   // finishing/final status.
+  const quint64 generation = captureGeneration_;
   QMetaObject::invokeMethod(
       this,
-      [this, status, warning] {
-        if (phase_ == Phase::Capturing)
+      [this, status, warning, generation] {
+        if (!released_ && generation == captureGeneration_ &&
+            phase_ == Phase::Capturing)
           setStatus(status, warning);
       });
 }
@@ -331,6 +341,7 @@ void ScrollCapturePanel::startCapture(Mode mode, stitch::Axis axis) {
       QRect(QPoint(), worker->output.bufferSize()));
   worker->debugDir = qEnvironmentVariable("OMASNAP_SCROLL_DEBUG_DIR");
   worker_ = std::move(worker);
+  autoStalled_ = false;
   phase_ = Phase::Capturing;
   applyInputRegion();
   // The move puck lives inside the region, so the frame on screen right now
@@ -347,17 +358,23 @@ void ScrollCapturePanel::startCapture(Mode mode, stitch::Axis axis) {
   setKeyboardGrab(false);
   stopRequested_ = false;
   if (mode_ == Mode::Manual) {
-    setStatus(QStringLiteral("Scroll the page · Done stitches it"));
-    // A couple of frames after the repaint above, so the compositor has
-    // presented the puck-less frame before the first grab reads it back.
-    QTimer::singleShot(kChromeSettleMs, this, [this] {
-      if (phase_ != Phase::Capturing)
-        return;
-      workerFuture_ = QtConcurrent::run([this] { captureLoop(); });
-    });
+    startManualCapture();
     return;
   }
   startInjector(false);
+}
+
+void ScrollCapturePanel::startManualCapture() {
+  setStatus(QStringLiteral("Scroll the page · Done stitches it"));
+  // Allow the compositor to present the puck-less frame before the first
+  // grab, but discard this start if Back or a mode change replaces it.
+  const quint64 generation = captureGeneration_;
+  QTimer::singleShot(kChromeSettleMs, this, [this, generation] {
+    if (released_ || generation != captureGeneration_ ||
+        phase_ != Phase::Capturing || mode_ != Mode::Manual)
+      return;
+    workerFuture_ = QtConcurrent::run([this] { captureLoop(); });
+  });
 }
 
 void ScrollCapturePanel::startInjector(bool continuing) {
@@ -421,6 +438,9 @@ void ScrollCapturePanel::stopWorker() {
     injectorStop_->store(true, std::memory_order_release);
   if (workerFuture_.isRunning())
     workerFuture_.waitForFinished();
+  // Status/stall notices already queued by the old loop and its deferred
+  // manual start must not attach themselves to the next capture.
+  ++captureGeneration_;
 }
 
 void ScrollCapturePanel::captureLoop() {
@@ -550,7 +570,9 @@ void ScrollCapturePanel::autoCaptureLoop() {
       continue;
     }
     QImage cropped;
-    if (!w.acquireSettledFrame(w.lastCrop, cropped, error)) {
+    if (!w.acquireSettledFrame(w.lastCrop, cropped, error, stopRequested_)) {
+      if (stopRequested_)
+        break;
       // Never acknowledge on a failed grab: the worker holds this cycle and
       // the same stable screen is retried.
       if (w.output.sessionStopped()) {
@@ -815,6 +837,7 @@ void ScrollCapturePanel::returnToModeChoice() {
   if (phase_ != Phase::Capturing)
     return;
   stopWorker();
+  autoStalled_ = false;
   worker_.reset();
   injectorStop_.reset();
   handshake_.reset();

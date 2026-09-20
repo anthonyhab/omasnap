@@ -14,6 +14,7 @@
 #include <QThread>
 #include <QThreadPool>
 #include <QTimer>
+#include <QtConcurrent/QtConcurrentRun>
 
 namespace {
 template <typename Predicate> bool waitUntil(Predicate ready) {
@@ -61,6 +62,51 @@ bool runScrollStartupSmoke(QString &error) {
   panel->resize(800, 600);
   panel->region_ = QRect(100, 100, 400, 300);
   panel->phase_ = ScrollCapturePanel::Phase::Capturing;
+  panel->mode_ = ScrollCapturePanel::Mode::Auto;
+  // A stopped loop can have UI notices queued behind Back. They must not
+  // make a replacement capture appear stalled or overwrite its status.
+  auto notices = QtConcurrent::run([&panel] {
+    panel->postStatus(QStringLiteral("old capture"));
+    panel->postStalled();
+  });
+  notices.waitForFinished();
+  panel->autoStalled_ = true;
+  panel->returnToModeChoice();
+  if (panel->autoStalled_) {
+    error = QStringLiteral("Back retained the old capture's Continue state");
+    return false;
+  }
+  panel->phase_ = ScrollCapturePanel::Phase::Capturing;
+  panel->setStatus(QStringLiteral("replacement capture"));
+  QCoreApplication::processEvents();
+  if (panel->autoStalled_ || panel->status_ != QStringLiteral("replacement capture")) {
+    error = QStringLiteral("Queued notices revived a stopped capture");
+    return false;
+  }
+  notices = QtConcurrent::run([&panel] {
+    panel->postStatus(QStringLiteral("current capture"));
+    panel->postStalled();
+  });
+  notices.waitForFinished();
+  QCoreApplication::processEvents();
+  if (!panel->autoStalled_ || panel->status_ != QStringLiteral("current capture")) {
+    error = QStringLiteral("Current capture notices were lost");
+    return false;
+  }
+  panel->autoStalled_ = false;
+  // Back and another manual selection can fit inside the chrome-settle
+  // interval. The old start must not launch against the replacement Worker.
+  // There is deliberately no Worker here: reviving that start is invalid.
+  panel->mode_ = ScrollCapturePanel::Mode::Manual;
+  panel->startManualCapture();
+  panel->returnToModeChoice();
+  panel->phase_ = ScrollCapturePanel::Phase::Capturing;
+  bool settled = false;
+  QTimer::singleShot(120, panel.get(), [&settled] { settled = true; });
+  if (!waitUntil([&] { return settled; }) || !panel->workerFuture_.isCanceled()) {
+    error = QStringLiteral("A cancelled manual start reached the replacement capture");
+    return false;
+  }
   panel->mode_ = ScrollCapturePanel::Mode::Auto;
   panel->injectorStarter_ = [state](auto stop, auto, int, int, auto,
                                   const QString &, QString &) {
