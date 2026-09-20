@@ -1268,6 +1268,7 @@ bool captureMonitorPixels(const MonitorInfo &monitor, CaptureData &capture,
                           bool includeWindows, QString &error) {
   StartupTimingScope timing("monitor pixels + window discovery");
   capture.monitor = monitor;
+  capture.preserveSourceResolution = false;
   const QRect geometry = capture.monitor.geometry;
   if (geometry.size().isEmpty()) {
     error = QStringLiteral("Focused monitor reported an empty geometry");
@@ -1335,7 +1336,9 @@ QImage renderCapture(const CaptureData &capture, const QRectF &selection,
       capture.source.width() / static_cast<qreal>(capture.previewSize.width());
   const qreal sourceScaleY =
       capture.source.height() / static_cast<qreal>(capture.previewSize.height());
-  const bool highDpi = capture.monitor.scale > 1.0;
+  // A document already has its final pixels. Its integer logical size can
+  // round at fractional scales; do not resize the image to undo that rounding.
+  const bool highDpi = capture.monitor.scale > 1.0 && !capture.preserveSourceResolution;
   const qreal scaleX = highDpi ? capture.monitor.scale : sourceScaleX;
   const qreal scaleY = highDpi ? capture.monitor.scale : sourceScaleY;
   const QPointF sourceOriginOffset(
@@ -2544,4 +2547,5 @@ void describeFileCapture(CaptureData &capture, QImage image,
   capture.monitor.pixelSize = image.size();
   capture.monitor.geometry = QRect(QPoint(0, 0), capture.previewSize);
   capture.source = std::move(image);
+  capture.preserveSourceResolution = true;
 }

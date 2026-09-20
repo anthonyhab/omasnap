@@ -1518,7 +1518,62 @@ bool runPointerDamageRegionCheck(QString &error) {
   return true;
 }
 
+bool runScrollScaleChecks(QString &error) {
+  const QSize logicalSize(300, 500);
+  for (const qreal scale : {1.0, 1.25, 1.5, 2.0}) {
+    CaptureData capture;
+    capture.monitor.geometry = {0, 0, 800, 600};
+    capture.monitor.pixelSize = (QSizeF(800, 600) * scale).toSize();
+    capture.monitor.scale = scale;
+    capture.previewSize = {800, 600};
+    capture.source = QImage(capture.monitor.pixelSize, QImage::Format_ARGB32_Premultiplied);
+    capture.source.fill(Qt::white);
+    // Stitch offsets can leave a native row that is not a whole logical
+    // pixel. Reopening and saving must retain that row without resampling.
+    for (const QSize extra : {QSize(0, 0), QSize(0, 1), QSize(1, 1)}) {
+      QImage stitched((QSizeF(logicalSize) * scale).toSize() + extra,
+                      QImage::Format_ARGB32_Premultiplied);
+      stitched.fill(Qt::white);
+      for (int x = 0; x < stitched.width(); ++x)
+        stitched.setPixelColor(x, stitched.height() - 1, Qt::red);
+      const QSize expectedLogical = logicalSize + extra;
+      CaptureEditor editor(capture, CaptureEditor::CaptureMode::Scroll);
+      editor.setSuppressSnapshots(true);
+      editor.resize(1200, 1200);
+      editor.adoptStitchedForTest(stitched);
+      if (editor.captureData().previewSize != expectedLogical ||
+          editor.captureData().source != stitched || editor.renderCurrentOutput() != stitched) {
+        error = QStringLiteral("Stitched capture lost its logical size or native pixels at scale %1")
+                    .arg(scale);
+        return false;
+      }
+
+      OperationLog log;
+      log.previewSize = expectedLogical;
+      CaptureData reopened;
+      describeFileCapture(reopened, stitched, log);
+      CaptureEditor fromPin(reopened, CaptureEditor::CaptureMode::File);
+      fromPin.setSuppressSnapshots(true);
+      fromPin.resize(1200, 1200);
+      for (const bool windowed : {false, true}) {
+        editor.setWindowedPresentation(windowed);
+        fromPin.setWindowedPresentation(windowed);
+        if (editor.sourceFrameWidgetRectForTest().size() != QSizeF(expectedLogical) ||
+            fromPin.sourceFrameWidgetRectForTest() != editor.sourceFrameWidgetRectForTest() ||
+            fromPin.renderCurrentOutput() != stitched) {
+          error = QStringLiteral("A reopened scrolling pin changed size or pixels at scale %1")
+                      .arg(scale);
+          return false;
+        }
+      }
+    }
+  }
+  return true;
+}
+
 bool runPostCaptureChecks(QString &error) {
+  if (!runScrollScaleChecks(error))
+    return false;
   QTemporaryDir directory;
   if (!directory.isValid())
     return false;
@@ -1589,7 +1644,14 @@ bool runPostCaptureChecks(QString &error) {
       stitched.fill(Qt::cyan);
       editor.adoptStitchedForTest(stitched);
     }
-    const QSize logicalSize = editor.currentSelection().size().toSize();
+    const QSize logicalSize = mode == Mode::Fullscreen ? QSize(800, 600)
+                              : mode == Mode::Scroll ? QSize(400, 1200)
+                                                     : QSize(300, 200);
+    if (editor.currentSelection().size().toSize() != logicalSize) {
+      error = QStringLiteral("Post-capture output lost the monitor's logical size (mode %1)")
+                  .arg(static_cast<int>(mode));
+      return false;
+    }
     const QImage expected = editor.renderCurrentOutput();
     if (!editor.exportingForTest() || editor.editingForTest()) {
       error = QStringLiteral("Fresh capture opened the editor instead of outputting");

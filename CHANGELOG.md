@@ -42,6 +42,9 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 
 ### Fixed
 
+- Preserve monitor scaling when opening scrolling captures for annotation
+  or from a floating preview, so 2× captures do not appear twice as large.
+  Retain the original pixel dimensions when the logical size rounds.
 - Keep copied file paths usable after closing or expiring previews by saving
   the PNG before copying its path.
 - Focus the next pin when closing one, so repeated X presses work without

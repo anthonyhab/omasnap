@@ -44,6 +44,8 @@ struct CaptureData {
   /** Logical size the native source image is presented at. */
   QSize previewSize;
   QVector<WindowTarget> windows;
+  /** Loaded documents retain their exact pixel dimensions during rendering. */
+  bool preserveSourceResolution = false;
 };
 
 enum class BackgroundStyle {
