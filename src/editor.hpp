@@ -19,6 +19,7 @@
 #include <QWidget>
 
 #include <optional>
+#include <memory>
 
 class QKeyEvent;
 class QMouseEvent;
@@ -29,6 +30,7 @@ class QPainter;
 
 class InlineTextEdit;
 class ScrollCapturePanel;
+class PinSnapshotFile;
 namespace LayerShellQt {
 class Window;
 }
@@ -123,6 +125,10 @@ public:
   [[nodiscard]] QString workingSourcePath() const { return snapshotPath_; }
   [[nodiscard]] QString workingLogPath() const;
   bool restoreOperationLog(const QString &path, QString &error);
+  /** Return edits to the originating pin when dismissing this document. */
+  void setPinDocument(std::shared_ptr<PinSnapshotFile> document) {
+    pinDocument_ = std::move(document);
+  }
 
   /**
    * Disables working-snapshot persistence. The hidden editor behind instant
@@ -540,6 +546,8 @@ private:
   /// Back from the editor to the select phase: the op log is dropped and the
   /// frozen screen is offered again for a new region or window.
   void returnToSelect();
+  void dismissEditor();
+  void cancelEditInteraction();
   /// Scroll capture takes over the surface with `region` drawn.
   void startScrollCapture(const QRect &region);
   /// Tears the scroll panel down; the surface is whole again.
@@ -844,6 +852,7 @@ private:
   bool dragStartStateValid_ = false;
   bool dragChanged_ = false;
   QString snapshotPath_;
+  std::shared_ptr<PinSnapshotFile> pinDocument_;
   QuickOutputMode quickOutputMode_ = QuickOutputMode::None;
   QString status_ = QStringLiteral("Drag to select an area");
   InlineTextEdit *textEditor_ = nullptr;
@@ -854,7 +863,6 @@ private:
   /// Typeface held by the active inline draft (existing layer or next-label
   /// default), kept alongside textSize_ so its baseline does not jump.
   TextFont textEditFont_ = TextFont::Neucha;
-  QElapsedTimer escapeTimer_;
   /// The inline editor's pill and caret are painted by the editor itself
   /// (the multiline editor stays transparent with its own caret hidden) so the
   /// caret follows the selected face's glyph box instead of its whole line box.

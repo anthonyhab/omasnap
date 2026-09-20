@@ -125,6 +125,10 @@ void configureCaptureCommandLine(QCommandLineParser &parser, bool beforeQt) {
                                   QStringLiteral("token"));
   handoffToken.setFlags(QCommandLineOption::HiddenFromHelp);
   parser.addOption(handoffToken);
+  QCommandLineOption pinDocument(QStringLiteral("pin-document"), QString(),
+                                 QStringLiteral("path"));
+  pinDocument.setFlags(QCommandLineOption::HiddenFromHelp);
+  parser.addOption(pinDocument);
   const QCommandLineOption scrollOption(
       QStringLiteral("scroll"),
       QStringLiteral("Capture a scrolling region and stitch it into one tall "

@@ -19,6 +19,9 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 
 ### Changed
 
+- One `Esc` dismisses the annotator. Editing a pin keeps its window in place;
+  returning updates that same pin and preserves editable layers and undo history,
+  including across window/overlay switches.
 - Fresh captures copy immediately and open a floating preview, with annotation
   available from its Edit button. Use `--editor overlay` or `--editor window`
   to annotate before output; `--copy`/`--save` bypass the pin.

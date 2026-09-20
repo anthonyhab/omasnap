@@ -1,6 +1,7 @@
 /** @fileoverview Handles screenshot selection, annotation, and editor drawing.
  */
 #include "editor.hpp"
+#include "pin-file.hpp"
 
 #include "stitch.hpp"
 #include "icons.hpp"
@@ -1097,9 +1098,7 @@ bool CaptureEditor::eventFilter(QObject *watched, QEvent *event) {
       return true;
     }
     if (key->key() == Qt::Key_Escape) {
-      // Esc keeps what was typed, but leaves the layer selected so a stray
-      // entry is one Backspace away from gone.
-      acceptText(true);
+      handleEscape();
       return true;
     }
   } else if (watched == textEditor_ && event->type() == QEvent::FocusOut) {
@@ -2611,7 +2610,7 @@ CaptureEditor::toolbarButtons(QVector<qreal> *groupDividers,
   add(36, QStringLiteral("copy"), {}, QStringLiteral("Copy only · Ctrl+C"));
   add(40, QStringLiteral("both"), {}, QStringLiteral("Copy and save · Enter"));
   add(36, QStringLiteral("save"), {}, QStringLiteral("Save only · Ctrl+S"));
-  add(36, QStringLiteral("close"), {}, QStringLiteral("Close · Esc twice"));
+  add(36, QStringLiteral("close"), {}, QStringLiteral("Close · Esc"));
 
   if (includeSubmenus && shapeMenuOpen_) {
     const QRectF menu = shapeMenuRect();
@@ -3229,6 +3228,7 @@ void CaptureEditor::handOffEditor(bool toWindow) {
                          pristineLogicalSize_};
   const QString program = QCoreApplication::applicationFilePath();
   const auto launcher = processLauncher_;
+  const auto pinDocument = pinDocument_;
   const QString monitor = windowedPresentation_ && screen()
                               ? screen()->name() : capture_.monitor.name;
   auto *watcher = new QFutureWatcher<QString>(this);
@@ -3245,7 +3245,7 @@ void CaptureEditor::handOffEditor(bool toWindow) {
       setStatus(error);
     }
   });
-  watcher->setFuture(QtConcurrent::run([source, log, program, toWindow, launcher, pendingSnapshot, monitor]() mutable {
+  watcher->setFuture(QtConcurrent::run([source, log, program, toWindow, launcher, pendingSnapshot, monitor, pinDocument]() mutable {
     // A replacement process waits only briefly for the instance lock.
     // Finish existing persistence here, without blocking the GUI, before it
     // can ask this process to exit. Coalesced autosaves are suppressed above.
@@ -3257,16 +3257,21 @@ void CaptureEditor::handOffEditor(bool toWindow) {
     QString error;
     const QString token = QUuid::createUuid().toString(QUuid::Id128);
     if (saveEditorHandoff(source, path, log, token, error)) {
-      const QStringList arguments{QStringLiteral("--file"), path,
+      QStringList arguments{QStringLiteral("--file"), path,
                                    QStringLiteral("--editor"),
                                    toWindow ? QStringLiteral("window")
                                             : QStringLiteral("overlay"),
                                    QStringLiteral("--handoff-monitor"), monitor,
                                    QStringLiteral("--handoff-token"), token};
+      if (pinDocument)
+        arguments << QStringLiteral("--pin-document") << pinDocument->path();
       const bool launched = launcher ? launcher(program, arguments)
                                     : QProcess::startDetached(program, arguments);
-      if (launched)
+      if (launched) {
+        if (pinDocument)
+          pinDocument->preserveForEditor();
         return QString();
+      }
       error = QStringLiteral("Could not start omasnap");
     }
     QFile::remove(path);
@@ -3288,6 +3293,11 @@ void CaptureEditor::waitForReopen() {
 void CaptureEditor::pinSnapshot() {
   if (busy_ || pinPending_ || selection_.isEmpty())
     return;
+
+  if (pinDocument_) {
+    handleEscape();
+    return;
+  }
 
   pinPending_ = true;
   setStatus(QStringLiteral("Preparing pinned capture…"));
@@ -3394,19 +3404,9 @@ void CaptureEditor::enterExport() {
 }
 
 void CaptureEditor::handleEscape() {
-  if (cutDragActive_) {
-    cutDragActive_ = false;
-    dragging_ = false;
-    refreshComposedCapture();
-    setStatus(QStringLiteral("Cut cancelled"));
-    updatePointerCursor();
-    update();
-    return;
-  }
   // Selecting: there is nothing to step back from, so one Esc closes (the
   // launch key then Esc is the quickest "never mind"). Only a drag in flight
-  // is cancelled first. Editing: Esc steps back to the select tool, and a
-  // second one close together closes.
+  // is cancelled first. Editing: dismiss and return the document to its pin.
   if (phase_ == Phase::Select) {
     if (!dragging_) {
       close();
@@ -3427,19 +3427,17 @@ void CaptureEditor::handleEscape() {
     update();
     return;
   }
-  const qint64 closeWindowMs =
-      static_cast<qint64>(QApplication::doubleClickInterval()) * 2;
-  if (escapeTimer_.isValid() && escapeTimer_.elapsed() <= closeWindowMs) {
-    close();
-    return;
+  endNudgeRun();
+  acceptText(true);
+  cancelEditInteraction();
+  dismissEditor();
+}
+
+void CaptureEditor::cancelEditInteraction() {
+  if (cutDragActive_) {
+    cutDragActive_ = false;
+    refreshComposedCapture();
   }
-  escapeTimer_.restart();
-  if (textEditor_) {
-    textEditor_->clear();
-    textEditor_->hide();
-  }
-  textCaretTimer_.stop();
-  editingAnnotation_ = -1;
   if (dragStartStateValid_) {
     replayLog();
     scheduleSnapshot();
@@ -3456,10 +3454,58 @@ void CaptureEditor::handleEscape() {
   freehandPoints_.clear();
   highlighterLock_.reset();
   tool_ = Tool::Select;
-  setStatus(QStringLiteral("Select/move · Esc again to close"));
+  setStatus(QStringLiteral("Select/move · Esc to close"));
   setFocus(Qt::OtherFocusReason);
   updatePointerCursor();
   update();
+}
+
+void CaptureEditor::dismissEditor() {
+  if (!pinDocument_) {
+    close();
+    return;
+  }
+  // The pin keeps its source, position and lifetime. Only its rendered preview
+  // changes; the separate operation log keeps every annotation undoable.
+  endNudgeRun();
+  busy_ = true;
+  setEnabled(false);
+  setStatus(QStringLiteral("Returning to pinned capture…"));
+  const auto document = pinDocument_;
+  const CaptureData capture = capture_;
+  const QRectF selection = selection_;
+  const auto annotations = annotations_;
+  const auto background = backgroundStyle_;
+  const bool shadow = imageShadow_;
+  const auto boundary = canvasBoundaryMode_;
+  const QImage backdrop = customBackdrop_;
+  const OperationLog log{ops_, opIndex_, nextAnnotationId_, nextMarker_,
+                         pristineLogicalSize_};
+  auto *watcher = new QFutureWatcher<QString>(this);
+  connect(watcher, &QFutureWatcher<QString>::finished, this, [this, watcher] {
+    const QString error = watcher->result();
+    watcher->deleteLater();
+    if (error.isEmpty())
+      close();
+    else {
+      busy_ = false;
+      setEnabled(true);
+      setStatus(error);
+    }
+  });
+  watcher->setFuture(QtConcurrent::run(
+      [document, capture, selection, annotations, background, shadow, boundary,
+       backdrop, log] {
+    QString error;
+    const QImage image = renderCapture(capture, selection, annotations, background,
+                                       shadow, boundary, backdrop);
+    // Commit the log last: its atomic replacement tells the pin that both
+    // the preview and the editable document are ready to read.
+    if (savePinnedSnapshot(image, document->previewPath(),
+                            selection.size().toSize(), error))
+      static_cast<void>(saveOperationLog(operationLogPath(document->path()), log, error));
+    return error;
+  }));
 }
 
 void CaptureEditor::chooseWindow(int index) {
@@ -3665,7 +3711,7 @@ void CaptureEditor::acceptText(bool keepSelected) {
       setStatus(keepSelected
                     ? QStringLiteral(
                           "Text added · Backspace removes · Enter edits")
-                    : QStringLiteral("Text added · Esc for select mode"));
+                    : QStringLiteral("Text added · V for select mode"));
       commitAnnotate(std::move(annotation));
       if (keepSelected && !annotations_.isEmpty()) {
         selectedAnnotation_ = annotations_.size() - 1;
@@ -3958,7 +4004,7 @@ void CaptureEditor::completeFinish(const FinishResult &result) {
   }
   if (result.mode == OutputMode::CopyAndPreview) {
     // The pin is the completion UI; a second notification would repeat it.
-    close();
+    dismissEditor();
     return;
   }
   if (result.mode == OutputMode::Copy)
@@ -3968,7 +4014,7 @@ void CaptureEditor::completeFinish(const FinishResult &result) {
   else
     sendCaptureNotification(QStringLiteral("Screenshot saved and copied"),
                             result.saved);
-  close();
+  dismissEditor();
 }
 
 void CaptureEditor::handleToolbar(const QString &action) {
@@ -4081,7 +4127,7 @@ void CaptureEditor::handleToolbar(const QString &action) {
   else if (action == QStringLiteral("save"))
     finish(OutputMode::Save);
   else if (action == QStringLiteral("close"))
-    close();
+    handleEscape();
   if (tool_ != toolBefore && status_ == statusBefore)
     setStatus(toolStatus());
   updatePointerCursor();
@@ -4096,9 +4142,6 @@ void CaptureEditor::keyPressEvent(QKeyEvent *event) {
                               key == Qt::Key_Alt || key == Qt::Key_Meta;
     if (!modifierOnly)
       dismissOcrOverlay();
-    // Esc only puts the card away; it should not also back out of the tool.
-    if (key == Qt::Key_Escape)
-      return;
   }
   if (phase_ == Phase::Export || busy_) {
     event->accept();
@@ -5062,11 +5105,11 @@ void CaptureEditor::mousePressEvent(QMouseEvent *event) {
       if (textEditing())
         acceptText();
       if (dragging_) {
-        handleEscape();
+        cancelEditInteraction();
       } else if (tool_ != Tool::Select || selectedAnnotation_ >= 0) {
         tool_ = Tool::Select;
         selectedAnnotation_ = -1;
-        setStatus(QStringLiteral("Select/move · Esc again to close"));
+        setStatus(QStringLiteral("Select/move · Esc to close"));
         updatePointerCursor();
         update();
       }
@@ -5387,7 +5430,7 @@ void CaptureEditor::mousePressEvent(QMouseEvent *event) {
     annotation.color = annotationColor();
     annotation.size = annotationSize_;
     selectedAnnotation_ = -1;
-    setStatus(QStringLiteral("Marker %1 added · Esc for select mode")
+    setStatus(QStringLiteral("Marker %1 added · V for select mode")
                   .arg(annotation.number));
     commitAnnotate(std::move(annotation));
     updatePointerCursor();
@@ -5489,7 +5532,7 @@ void CaptureEditor::mouseReleaseEvent(QMouseEvent *event) {
       commitPatch(selectedAnnotations_);
     dragStartStateValid_ = false;
     dragChanged_ = false;
-    setStatus(QStringLiteral("Layer moved · keep drawing, or Esc to select"));
+    setStatus(QStringLiteral("Layer moved · keep drawing, or V to select"));
     updatePointerCursor();
     update();
     return;
@@ -5638,7 +5681,7 @@ void CaptureEditor::mouseReleaseEvent(QMouseEvent *event) {
       setStatus(
           highlighter
               ? highlighterStatus()
-              : QStringLiteral("Stroke added · smoothing %1/%2 · Esc for "
+              : QStringLiteral("Stroke added · smoothing %1/%2 · V for "
                                "select mode")
                     .arg(annotation.smoothingLevel)
                     .arg(stroke::maximumSmoothingLevel));
@@ -5712,9 +5755,9 @@ void CaptureEditor::mouseReleaseEvent(QMouseEvent *event) {
     selectedAnnotation_ = -1;
     const bool redacted = tool_ == Tool::Redact;
     setStatus(redacted
-                  ? QStringLiteral("%1 redaction added · Esc for select mode")
+                  ? QStringLiteral("%1 redaction added · V for select mode")
                         .arg(redactionStyleName(redactionStyle_))
-                  : QStringLiteral("Layer added · Esc for select mode"));
+                  : QStringLiteral("Layer added · V for select mode"));
     commitAnnotate(std::move(annotation));
     updatePointerCursor();
   } else if (tool_ == Tool::Redact) {
@@ -6169,6 +6212,7 @@ void CaptureEditor::adoptStitched(const QImage &image) {
 
 void CaptureEditor::adoptImage(QImage image, OperationLog log, CaptureMode kind,
                                const QString &status) {
+  pinDocument_.reset();
   // The editor normally works on a region of the frozen screen. Here it is
   // handed an image instead (a stitched scroll, a shelved capture, a file)
   // and edits that: the image is the whole capture, at the scale its log was
@@ -6215,6 +6259,7 @@ void CaptureEditor::adoptImage(QImage image, OperationLog log, CaptureMode kind,
 }
 
 void CaptureEditor::returnToSelect() {
+  pinDocument_.reset();
   if (textEditing()) {
     textEditor_->clear();
     textEditor_->hide();
@@ -6679,7 +6724,7 @@ QVector<QPair<QString, QString>> editorHotkeyEntries() {
           {QStringLiteral("Enter"), QStringLiteral("Copy + save")},
           {QStringLiteral("Ctrl+C"), QStringLiteral("Copy only")},
           {QStringLiteral("Ctrl+S"), QStringLiteral("Save only")},
-          {QStringLiteral("Esc"), QStringLiteral("Arrow / twice close")}};
+          {QStringLiteral("Esc"), QStringLiteral("Close")}};
 }
 
 void CaptureEditor::paintEdit(QPainter &painter) {

@@ -158,12 +158,18 @@ It also records freely placed pins, which must stay free even when aligned with
 the screen edge. Fan moves use compositor animations and preserve the native
 windows; folding restores their stacking order without a focus dispatch.
 Closing an active pin compacts the deck and focuses the next pin on the same
-monitor in that worker transaction. Editor handoffs skip the focus transfer.
+monitor in that worker transaction. Opening annotation leaves the pin alive,
+so there is no closing-pin focus transfer to compete with the editor.
 The same transaction publishes each card's tilt. A filesystem watcher triggers
 a small worker read when that state changes; it adds no idle polling. The UI
 animates the painted card and its input region inside the existing window bounds.
 Pin frames are drawn with their images so the outline can rotate too; the runtime
 pin rule disables the compositor's rectangular border, shadow and background blur.
+
+Returning from annotation renders and saves the pin preview and operation log
+on a worker. A filesystem watch on the completed log starts a worker to decode
+the new preview and prepare its drag payload. The GUI updates the image inside
+the existing window; its compositor position and stack membership are unchanged.
 
 Normal previews use a one-shot ten-second timer and a short paint-opacity fade.
 Explicit pins and direct interaction disable that timer. Hover and shared stack

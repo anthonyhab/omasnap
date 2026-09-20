@@ -7,6 +7,7 @@
 #include "output-config.hpp"
 #include "overlay-chrome.hpp"
 #include "pin.hpp"
+#include "pin-file.hpp"
 #include "recent-snaps.hpp"
 #include "startup-timing.hpp"
 
@@ -309,6 +310,19 @@ int main(int argc, char **argv) {
   CaptureData capture;
   OperationLog restoredLog;
   QString error;
+  std::shared_ptr<PinSnapshotFile> pinDocument;
+  if (parser.isSet(QStringLiteral("pin-document"))) {
+    const QString path = parser.value(QStringLiteral("pin-document"));
+    if (!editingImage || !PinSnapshotFile::isOwnedPath(path)) {
+      qCritical("Invalid pinned document");
+      return 1;
+    }
+    pinDocument = std::make_shared<PinSnapshotFile>(path);
+    if (!pinDocument->isLocked()) {
+      qCritical("Could not retain the pinned document");
+      return 1;
+    }
+  }
   if (editingImage) {
     QImage image;
     QString inputName;
@@ -412,6 +426,7 @@ int main(int argc, char **argv) {
   const QSize editingPreview = capture.previewSize;
   CaptureEditor editor(std::move(capture), captureMode, quickOutputMode,
                        restoredLog, nullptr, editorWindowMode && !editingImage);
+  editor.setPinDocument(std::move(pinDocument));
   startupTimingMark("CaptureEditor constructed");
   editor.setScreen(targetScreen);
   if (windowedEditorProcess && editingImage) {

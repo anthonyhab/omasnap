@@ -486,6 +486,12 @@ struct PinStackState {
   bool interacting = false;
 };
 
+struct PinPreview {
+  QImage image;
+  QByteArray png;
+  QImage drag;
+};
+
 class PinWindow final : public QWidget {
 public:
   explicit PinWindow(QImage image, QString path, const QSize &frame,
@@ -554,12 +560,33 @@ public:
       }
     });
     runtime->setFuture(QtConcurrent::run(&pinPool(), [] { return secureRuntimeDirectory(); }));
+    connect(&documentFiles_, &QFileSystemWatcher::fileChanged, this, [this](const QString &path) {
+      // QSaveFile replaces the inode, so each completed edit needs a new watch.
+      documentFiles_.addPath(path);
+      reloadPinDocument();
+    });
+    connect(&documentWatcher_, &QFutureWatcher<PinPreview>::finished, this, [this] {
+      documentLoading_ = false;
+      const auto preview = documentWatcher_.result();
+      if (!closing_ && !preview.image.isNull()) {
+        image_ = preview.image;
+        dragPng_ = preview.png;
+        dragPreview_ = preview.drag;
+        path_ = pinDocument_->previewPath();
+        sharedPath_.clear();
+        update();
+      }
+      if (std::exchange(documentReloadPending_, false))
+        reloadPinDocument();
+    });
     using DragPayload = QPair<QByteArray, QImage>;
     auto *payload = new QFutureWatcher<DragPayload>(this);
-    connect(payload, &QFutureWatcher<DragPayload>::finished, this, [this, payload] {
+    connect(payload, &QFutureWatcher<DragPayload>::finished, this, [this, payload, path = path_] {
       auto result = payload->result();
-      dragPng_ = std::move(result.first);
-      dragPreview_ = std::move(result.second);
+      if (path_ == path) {
+        dragPng_ = std::move(result.first);
+        dragPreview_ = std::move(result.second);
+      }
       payload->deleteLater();
     });
     payload->setFuture(QtConcurrent::run([image = image_, path = path_] {
@@ -1103,10 +1130,10 @@ protected:
   struct ActionResult {
     QString error;
     QString sharedPath;
+    std::shared_ptr<PinSnapshotFile> document;
   };
 
-  void runAction(std::function<ActionResult()> worker, QString message,
-                 bool reopening = false) {
+  void runAction(std::function<ActionResult()> worker, QString message) {
     expiry_.setKept(true);
     if (actionPending_)
       return;
@@ -1114,7 +1141,7 @@ protected:
     updateExpiryPause();
     auto *watcher = new QFutureWatcher<ActionResult>(this);
     connect(watcher, &QFutureWatcher<ActionResult>::finished, this,
-            [this, watcher, message, reopening] {
+            [this, watcher, message] {
       const auto result = watcher->result();
       watcher->deleteLater();
       actionPending_ = false;
@@ -1122,13 +1149,14 @@ protected:
       // Reuse a successful save even if the following clipboard write failed.
       if (!result.sharedPath.isEmpty())
         sharedPath_ = result.sharedPath;
+      if (result.document && !pinDocument_) {
+        pinDocument_ = result.document;
+        documentFiles_.addPath(operationLogPath(pinDocument_->path()));
+        reloadPinDocument();
+      }
       if (!result.error.isEmpty())
         showToast(result.error);
-      else if (reopening) {
-        snapshotFile_.preserveForEditor();
-        editorHandoff_ = true;
-        close();
-      } else {
+      else if (!message.isEmpty()) {
         showToast(message);
       }
     });
@@ -1139,7 +1167,7 @@ protected:
     runAction([image = image_] {
       QString error;
       static_cast<void>(copyImageToClipboard(image, error));
-      return ActionResult{error, {}};
+      return ActionResult{error, {}, {}};
     }, QStringLiteral("Copied to clipboard"));
   }
 
@@ -1156,20 +1184,46 @@ protected:
       }
       if (!shared.isEmpty())
         static_cast<void>(copyTextToClipboard(shared, error));
-      return ActionResult{error, shared};
+      return ActionResult{error, shared, {}};
     }, QStringLiteral("Copied path"));
   }
 
   void reopenInEditor() {
-    runAction([program = QCoreApplication::applicationFilePath(), path = path_]() -> ActionResult {
-      PinSnapshotFile handoff(path);
-      if (!handoff.isLocked())
-        return {QStringLiteral("Could not retain the pinned capture"), {}};
-      if (!QProcess::startDetached(program, {path}))
-        return {QStringLiteral("Could not start omasnap"), {}};
-      handoff.preserveForEditor();
-      return {};
-    }, {}, true);
+    runAction([program = QCoreApplication::applicationFilePath(), path = path_,
+               document = pinDocument_]() mutable -> ActionResult {
+      QString error;
+      if (!document)
+        document = copyPinDocument(path, error);
+      if (!document)
+        return {error, {}, {}};
+      const QStringList arguments{QStringLiteral("--file"), document->path(),
+                                   QStringLiteral("--pin-document"), document->path()};
+      if (!QProcess::startDetached(program, arguments))
+        return {QStringLiteral("Could not start omasnap"), {}, document};
+      return {{}, {}, document};
+    }, {});
+  }
+
+  void reloadPinDocument() {
+    if (closing_ || !pinDocument_)
+      return;
+    if (documentLoading_) {
+      documentReloadPending_ = true;
+      return;
+    }
+    documentLoading_ = true;
+    documentWatcher_.setFuture(QtConcurrent::run([document = pinDocument_] {
+      PinPreview result;
+      QFile file(document->previewPath());
+      if (file.open(QIODevice::ReadOnly)) {
+        result.png = file.readAll();
+        result.image = QImage::fromData(result.png, "PNG");
+        if (!result.image.isNull())
+          result.drag = result.image.scaled(256, 256, Qt::KeepAspectRatio,
+                                            Qt::SmoothTransformation);
+      }
+      return result;
+    }));
   }
 
   void mouseMoveEvent(QMouseEvent *event) override {
@@ -1305,7 +1359,7 @@ protected:
     // excluded by name rather than trusted to be gone.
     static_cast<void>(QtConcurrent::run(&pinPool(),
         [title = windowTitle(), screen = dragScreen_,
-         advanceFocus = !expired_ && !editorHandoff_ && (hovered_ || isActiveWindow())] {
+         advanceFocus = !expired_ && (hovered_ || isActiveWindow())] {
       PinPlacement placement;
       if (!placement.ready())
         return;
@@ -1471,9 +1525,13 @@ private:
   QString path_;
   QString sharedPath_;
   PinSnapshotFile snapshotFile_;
+  std::shared_ptr<PinSnapshotFile> pinDocument_;
+  QFileSystemWatcher documentFiles_;
+  QFutureWatcher<PinPreview> documentWatcher_;
+  bool documentLoading_ = false;
+  bool documentReloadPending_ = false;
   QVector<CompositorPin> cachedPins_;
   bool closing_ = false;
-  bool editorHandoff_ = false;
   quint64 snapGeneration_ = 0;
   bool queryPending_ = false;
   bool finishRequested_ = false;

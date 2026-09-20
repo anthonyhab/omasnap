@@ -15,6 +15,8 @@
 #include <QTemporaryDir>
 #include <QScopeGuard>
 #include <QTest>
+#include <QStringList>
+#include <algorithm>
 
 #include <fcntl.h>
 #include <sys/file.h>
@@ -271,17 +273,21 @@ bool runPinLifecycleSmoke(QString &error) {
   QFile::remove(unrelatedPath);
 
   const QString path = pinnedSnapshotPath(987654);
-  if (!saveTemporarySnapshot(image, path, error))
+  const QString preview = path + QStringLiteral(".preview.png");
+  if (!savePinnedSnapshot(image, path, QSize(4, 4), error) ||
+      !savePinnedSnapshot(image, preview, QSize(4, 4), error))
     return false;
-  QFile agedFile(path);
-  if (!agedFile.open(QIODevice::ReadOnly) ||
-      !agedFile.setFileTime(QDateTime::currentDateTime().addDays(-2),
-                            QFileDevice::FileModificationTime)) {
-    error = QStringLiteral("Could not age pin snapshot");
-    QFile::remove(path);
-    return false;
+  const QStringList documentFiles{path, operationLogPath(path), preview,
+                                   operationLogPath(preview)};
+  for (const QString &filePath : documentFiles) {
+    QFile agedFile(filePath);
+    if (!agedFile.open(QIODevice::ReadOnly) ||
+        !agedFile.setFileTime(QDateTime::currentDateTime().addDays(-2),
+                              QFileDevice::FileModificationTime)) {
+      error = QStringLiteral("Could not age pin document");
+      return false;
+    }
   }
-  agedFile.close();
 
   bool survived = false;
   {
@@ -292,10 +298,16 @@ bool runPinLifecycleSmoke(QString &error) {
       return false;
     }
     prunePinnedSnapshots();
-    survived = QFileInfo::exists(path);
+    survived = std::all_of(documentFiles.cbegin(), documentFiles.cend(),
+                            [](const QString &filePath) { return QFileInfo::exists(filePath); });
   }
   if (!survived) {
-    error = QStringLiteral("Active pin snapshot was pruned");
+    error = QStringLiteral("An active pin lost its source, log, or preview during pruning");
+    return false;
+  }
+  if (std::any_of(documentFiles.cbegin(), documentFiles.cend(),
+                   [](const QString &filePath) { return QFileInfo::exists(filePath); })) {
+    error = QStringLiteral("Closing a pin left part of its editable document behind");
     return false;
   }
 

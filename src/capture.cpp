@@ -2,6 +2,7 @@
 #include <QTextLayout>
 #include <QTextOption>
 #include "capture.hpp"
+#include "pin-file.hpp"
 #include "stroke-smoothing.hpp"
 #include "output-config.hpp"
 #include "startup-timing.hpp"
@@ -1742,19 +1743,13 @@ void prunePinnedSnapshots() {
     return;
   const QDateTime cutoff = QDateTime::currentDateTime().addDays(-1);
   const QFileInfoList stale =
-      QDir(runtime).entryInfoList({QStringLiteral("pin-*.png"),
-                                   QStringLiteral("pin-*.json")},
-                                  QDir::Files);
+      QDir(runtime).entryInfoList({QStringLiteral("pin-*.png")}, QDir::Files);
   for (const QFileInfo &entry : stale) {
-    if (entry.lastModified() >= cutoff)
+    if (entry.lastModified() >= cutoff || !PinSnapshotFile::isOwnedPath(entry.absoluteFilePath()))
       continue;
-    const QByteArray encodedPath = QFile::encodeName(entry.absoluteFilePath());
-    const int fd = ::open(encodedPath.constData(), O_RDONLY | O_CLOEXEC);
-    if (fd < 0)
-      continue;
-    if (::flock(fd, LOCK_EX | LOCK_NB) == 0)
-      QFile::remove(entry.absoluteFilePath());
-    ::close(fd);
+    // The source lock protects the entire document, including its sidecar
+    // and edited preview. Never prune those independently of an active pin.
+    const PinSnapshotFile snapshot(entry.absoluteFilePath());
   }
 }
 

@@ -31,7 +31,7 @@ change that touches the principle, not just this summary.
   pure, repeatable function of that log — nothing is baked into the working
   image as you draw. Fresh captures copy and show a timed preview by default;
   during editing, output is applied only on **Copy**, **Save**, or both
-  (or an explicit pin),
+  (or an explicit pin or a return to its preview),
   which is the one moment a flattened image is produced. Redaction is the
   deliberate, documented exception: it must actually destroy pixels at
   render time so nothing recoverable leaks into an export, while remaining

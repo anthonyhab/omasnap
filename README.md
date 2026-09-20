@@ -398,7 +398,7 @@ into a scrolling capture. Explicit `region`, `windows`, `fullscreen`, and
 | `Enter` | Capture the highlighted window |
 | `Ctrl+A` | Select the full focused monitor |
 | Hover the right-edge stack | Fan out the five most recent captures; click one to reopen it |
-| `Esc` | Dismiss (while selecting; in the editor, `Esc` returns to Select and a second `Esc` closes) |
+| `Esc` | Dismiss; cancel a selection drag if one is in progress |
 
 ### Annotation editor
 
@@ -416,7 +416,7 @@ into a scrolling capture. Explicit `region`, `windows`, `fullscreen`, and
 | `E` | Ellipse; shares the shape submenu and filled/hollow toggle |
 | `D` | Redact; press again to toggle randomized pixelation or solid redaction |
 | `X` | Cut out a band; drag to preview the crossed-out strip, then release to remove and collapse it |
-| `T` | Text on a cream readability pill, with Neucha as the default. Click for a one-line label, or drag a box to give it room for several lines: Enter moves to the next line while there is room and commits on the last one; `Shift+Enter` always adds a line; `Esc` commits too but keeps the label selected, so `Backspace` removes it; long text wraps at the current canvas edge by default, while moving it or dragging its width handle beyond that edge expands the canvas; clicking away keeps the text; press T again to toggle the pill |
+| `T` | Text on a cream readability pill, with Neucha as the default. Click for a one-line label, or drag a box to give it room for several lines: Enter moves to the next line while there is room and commits on the last one; `Shift+Enter` always adds a line; `Esc` commits the text and dismisses the annotator; long text wraps at the current canvas edge by default, while moving it or dragging its width handle beyond that edge expands the canvas; clicking away keeps the text; press T again to toggle the pill |
 | `Shift+T` | Cycle the next or selected text through Neucha, JetBrains Mono, and Inter Display |
 | `O` | Recognize and copy all text in the current image |
 | `B` | Cycle shadowed colors, window gray (shadowed and flat), and Off |
@@ -440,7 +440,7 @@ into a scrolling capture. Explicit `region`, `windows`, `fullscreen`, and
 | `Ctrl+S` | Save PNG only |
 | `Enter` | Copy and save (with a text layer selected: edit it) |
 | `Ctrl+P` / `P` | Keep the capture pinned on screen and close the editor |
-| `Esc` | Return to Select; press again to close |
+| `Esc` | Dismiss the annotator; keep an originating pin in place with its edits and undo history |
 | Right-click | Return to Select; cancel active drawing |
 
 ### Capture previews and pins
@@ -490,13 +490,16 @@ hovered and keep focus with the current app when first created.
 Closing an active or hovered pin focuses the next pin on that monitor, starting
 with the front of the remaining stack, so repeated `X` presses dismiss them
 without needing another mouse movement. Opening a pin for annotation keeps
-focus with the editor.
+the pin in place and gives focus to the editor. One `Esc` dismisses the editor
+and updates that same pin, including any text being typed. Reopening it restores
+the editable layers and undo history. `P` / `Ctrl+P` in that editor returns to
+the existing pin too.
 Automatic expiry compacts the stack without transferring keyboard focus.
 
 | Input on a pin | Action |
 |---|---|
 | Pin button, `Ctrl+P` while focused | Keep on screen; press again to unpin and restart the countdown |
-| Edit button, `A` / `E` while hovered | Reopen the full-resolution PNG in Omasnap and replace the pin |
+| Edit button, `A` / `E` while hovered | Annotate the capture while keeping the same pin |
 | Link button, `L` / `F` while hovered | Save the capture if needed and copy its file path |
 | Copy button, `C` while hovered, `Ctrl+C` | Copy the full-resolution PNG |
 | Top-left six-dot drag handle | Drag the PNG into a file-capable drop target |

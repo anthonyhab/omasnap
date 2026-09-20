@@ -19,6 +19,7 @@
 #include "stitch.hpp"
 #include "stroke-smoothing-smoke.hpp"
 #include "pin-lifecycle-smoke.hpp"
+#include "pin-file.hpp"
 #include "text-band.hpp"
 #include "transform-smoke.hpp"
 #include "eyedropper.hpp"
@@ -2004,7 +2005,6 @@ bool runCrashSnapshotChecks(const CaptureData &capture, QString &error) {
     quitEditor.show();
     annotate(quitEditor);
     QTest::keyClick(&quitEditor, Qt::Key_Escape);
-    QTest::keyClick(&quitEditor, Qt::Key_Escape);
     QCoreApplication::processEvents();
     if (!settleUntilWritten() || quitEditor.isVisible()) {
       error = QStringLiteral("Editing before a quit left no snapshot to clean");
@@ -2794,6 +2794,207 @@ bool runDraftViewLockCheck(QApplication &application, QString &error) {
 /** Handing a live edit to the other presentation keeps everything: the
  *  selection, the layers, and the undo history survive the round trip
  *  through the handoff document and file mode. */
+bool runPinEditorReturnChecks(QApplication &application, QString &error) {
+  QTemporaryDir files;
+  QImage source(1600, 1200, QImage::Format_ARGB32_Premultiplied);
+  source.fill(QColor(QStringLiteral("#203040")));
+  const QString original = files.filePath(QStringLiteral("capture.png"));
+  OperationLog originalLog;
+  originalLog.previewSize = {800, 600};
+  if (!source.save(original) ||
+      !saveOperationLog(operationLogPath(original), originalLog, error))
+    return false;
+  const auto settled = [](auto ready) {
+    QElapsedTimer timer;
+    timer.start();
+    while (!ready() && timer.elapsed() < 5000)
+      QTest::qWait(10);
+    return ready();
+  };
+  const auto samePixels = [](const QImage &first, const QImage &second) {
+    return first.convertToFormat(QImage::Format_ARGB32) ==
+           second.convertToFormat(QImage::Format_ARGB32);
+  };
+  for (const bool windowed : {false, true}) {
+    auto pin = copyPinDocument(original, error);
+    if (!pin)
+      return false;
+    const QString documentPath = pin->path();
+    const QString previewPath = pin->previewPath();
+    QImage expected;
+    CaptureData capture;
+    describeFileCapture(capture, source, originalLog);
+    {
+      CaptureEditor editor(capture, CaptureEditor::CaptureMode::File,
+                            QuickOutputMode::None, originalLog);
+      editor.setPinDocument(std::make_shared<PinSnapshotFile>(documentPath));
+      editor.setWindowedPresentation(windowed);
+      editor.resize(1000, 800);
+      editor.show();
+      application.processEvents();
+      QTest::keyClick(&editor, Qt::Key_R);
+      const QPoint start = editor.annotationPointToWidgetForTest({70, 80}).toPoint();
+      const QPoint end = editor.annotationPointToWidgetForTest({240, 190}).toPoint();
+      QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, start);
+      QTest::mouseMove(&editor, end, 10);
+      QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier, end);
+      if (editor.annotationCountForTest() != 1) {
+        error = QStringLiteral("Pin return fixture did not draw its rectangle");
+        return false;
+      }
+      expected = editor.renderCurrentOutput();
+      QTest::keyClick(&editor, Qt::Key_Escape);
+      if (!settled([&] { return !editor.isVisible(); }) ||
+          !samePixels(QImage(previewPath), expected) ||
+          !samePixels(QImage(documentPath), source)) {
+        error = QStringLiteral("One Escape did not return an edited preview with an intact source");
+        return false;
+      }
+    }
+    OperationLog edited;
+    if (!loadOperationLog(operationLogPath(documentPath), edited, error))
+      return false;
+    {
+      CaptureEditor reopened(capture, CaptureEditor::CaptureMode::File,
+                              QuickOutputMode::None, edited);
+      reopened.setPinDocument(std::make_shared<PinSnapshotFile>(documentPath));
+      reopened.setWindowedPresentation(windowed);
+      reopened.resize(1000, 800);
+      reopened.show();
+      application.processEvents();
+      if (reopened.annotationCountForTest() != 1 ||
+          !samePixels(reopened.renderCurrentOutput(), expected) ||
+          reopened.captureData().previewSize != QSize(800, 600)) {
+        error = QStringLiteral("Reopening a pin lost its edits or Retina scale");
+        return false;
+      }
+      QTest::keyClick(&reopened, Qt::Key_Z, Qt::ControlModifier);
+      if (reopened.annotationCountForTest() != 0 ||
+          !samePixels(reopened.renderCurrentOutput(), source)) {
+        error = QStringLiteral("A returned pin's annotation was baked into its source");
+        return false;
+      }
+      QTest::keyClick(&reopened, Qt::Key_Z, Qt::ControlModifier | Qt::ShiftModifier);
+      if (!samePixels(reopened.renderCurrentOutput(), expected)) {
+        error = QStringLiteral("A returned pin lost redo history");
+        return false;
+      }
+      QTest::keyClick(&reopened, Qt::Key_T);
+      QTest::mouseClick(&reopened, Qt::LeftButton, Qt::NoModifier,
+                        reopened.annotationPointToWidgetForTest({320, 250}).toPoint());
+      auto *input = qobject_cast<QPlainTextEdit *>(QApplication::focusWidget());
+      if (!input) {
+        error = QStringLiteral("Pin return fixture did not open its text draft");
+        return false;
+      }
+      QTest::keyClicks(input, QStringLiteral("Keep this label"));
+      QTest::keyClick(input, Qt::Key_Escape);
+      if (!settled([&] { return !reopened.isVisible(); }) ||
+          reopened.annotationCountForTest() != 2 ||
+          !samePixels(QImage(previewPath), reopened.renderCurrentOutput())) {
+        error = QStringLiteral("Escape while typing did not keep the label and dismiss the editor");
+        return false;
+      }
+    }
+    if (!loadOperationLog(operationLogPath(documentPath), edited, error))
+      return false;
+    QStringList handoff;
+    {
+      CaptureEditor editor(capture, CaptureEditor::CaptureMode::File,
+                            QuickOutputMode::None, edited);
+      editor.setPinDocument(std::make_shared<PinSnapshotFile>(documentPath));
+      editor.setWindowedPresentation(windowed);
+      editor.resize(1000, 800);
+      editor.show();
+      editor.setProcessLauncherForTest([&](const QString &, const QStringList &arguments) {
+        handoff = arguments;
+        return true;
+      });
+      QTest::keyClick(&editor, Qt::Key_W);
+      if (!settled([&] { return !editor.isVisible(); }) ||
+          handoff.value(handoff.indexOf(QStringLiteral("--pin-document")) + 1) != documentPath) {
+        error = QStringLiteral("Changing editor presentation lost the originating pin");
+        return false;
+      }
+    }
+    QCommandLineParser parser;
+    configureCaptureCommandLine(parser, true);
+    if (!parser.parse(QStringList{QStringLiteral("omasnap")} + handoff)) {
+      error = parser.errorText();
+      return false;
+    }
+    const QString handoffPath = parser.value(QStringLiteral("file"));
+    QImage handedSource(handoffPath);
+    if (!loadOperationLog(operationLogPath(handoffPath), edited, error) ||
+        !removeEditorHandoff(handoffPath, parser.value(QStringLiteral("handoff-token"))))
+      return false;
+    describeFileCapture(capture, handedSource, edited);
+    {
+      CaptureEditor editor(capture, CaptureEditor::CaptureMode::File,
+                            QuickOutputMode::None, edited);
+      editor.setPinDocument(std::make_shared<PinSnapshotFile>(documentPath));
+      editor.setWindowedPresentation(!windowed);
+      editor.resize(1000, 800);
+      editor.show();
+      QTest::keyClick(&editor, Qt::Key_Z, Qt::ControlModifier);
+      QTest::keyClick(&editor, Qt::Key_Escape);
+      if (!settled([&] { return !editor.isVisible(); }) ||
+          !samePixels(QImage(previewPath), expected)) {
+        error = QStringLiteral("Returning from the other presentation lost the edit history");
+        return false;
+      }
+    }
+    pin.reset();
+    if (QFile::exists(documentPath) || QFile::exists(operationLogPath(documentPath)) ||
+        QFile::exists(previewPath) || QFile::exists(operationLogPath(previewPath))) {
+      error = QStringLiteral("Closing a pin left its edited document behind");
+      return false;
+    }
+  }
+  // A failed return must leave the editor available to retry. Closing the
+  // originating pin meanwhile must not remove the editor's source underneath it.
+  auto pin = copyPinDocument(original, error);
+  if (!pin)
+    return false;
+  const QString documentPath = pin->path();
+  const QString previewPath = pin->previewPath();
+  {
+    CaptureData capture;
+    describeFileCapture(capture, source, originalLog);
+    CaptureEditor editor(capture, CaptureEditor::CaptureMode::File,
+                          QuickOutputMode::None, originalLog);
+    editor.setPinDocument(std::make_shared<PinSnapshotFile>(documentPath));
+    editor.resize(1000, 800);
+    editor.show();
+    QDir().mkdir(previewPath);
+    QTest::keyClick(&editor, Qt::Key_Escape);
+    if (!settled([&] { return editor.isEnabled(); }) || !editor.isVisible()) {
+      error = QStringLiteral("A failed pin return dismissed the editor instead of allowing retry");
+      return false;
+    }
+    QDir().rmdir(previewPath);
+    pin.reset();
+    if (!QFile::exists(documentPath)) {
+      error = QStringLiteral("Closing a pin removed the annotator's source");
+      return false;
+    }
+    QTest::keyClick(&editor, Qt::Key_Escape);
+    if (!settled([&] { return !editor.isVisible(); })) {
+      error = QStringLiteral("Pin return did not recover after a failed save");
+      return false;
+    }
+  }
+  OperationLog unchanged;
+  if (QFile::exists(documentPath) || QFile::exists(previewPath) ||
+      !samePixels(QImage(original), source) ||
+      !loadOperationLog(operationLogPath(original), unchanged, error) ||
+      !unchanged.ops.isEmpty() || unchanged.previewSize != originalLog.previewSize) {
+    error = QStringLiteral("Pin editing changed the user's original file or leaked its working copy");
+    return false;
+  }
+  return true;
+}
+
 bool runEditorHandoffRoundTrip(QApplication &application, QString &error) {
   CaptureData capture;
   capture.monitor.name = QStringLiteral("TEST");
@@ -3177,6 +3378,12 @@ bool runTextEnterSemanticsCheck(QApplication &application, QString &error) {
     error = QStringLiteral("Esc did not commit the label and keep it selected");
     return false;
   }
+  if (editor.isVisible()) {
+    error = QStringLiteral("Esc while typing did not dismiss the annotator");
+    return false;
+  }
+  editor.show();
+  application.processEvents();
   // Enter on the selected label reopens it rather than finishing the capture.
   QTest::keyClick(&editor, Qt::Key_Return);
   application.processEvents();
@@ -3186,6 +3393,7 @@ bool runTextEnterSemanticsCheck(QApplication &application, QString &error) {
     return false;
   }
   QTest::keyClick(inlineEditor(), Qt::Key_Escape);
+  editor.show();
   application.processEvents();
   QTest::keyClick(&editor, Qt::Key_Backspace);
   application.processEvents();
@@ -3731,10 +3939,10 @@ bool runContinuousAnnotationToolsSmoke(QApplication &application,
     }
   }
 
-  QTest::keyClick(&editor, Qt::Key_Escape);
+  QTest::keyClick(&editor, Qt::Key_V);
   application.processEvents();
   if (editor.armedToolForTest() != CaptureEditor::Tool::Select) {
-    error = QStringLiteral("Escape did not return to Select tool");
+    error = QStringLiteral("V did not return to Select tool");
     return false;
   }
 
@@ -6561,10 +6769,10 @@ bool runEllipseToolSmoke(QApplication &application, QString &error) {
 
   // The grouped shape submenu arms the ellipse tool without a separate
   // top-level toolbar slot.
-  QTest::keyClick(&editor, Qt::Key_Escape);
+  QTest::keyClick(&editor, Qt::Key_V);
   application.processEvents();
   if (editor.cursor().shape() != Qt::ArrowCursor) {
-    error = QStringLiteral("Escape did not return to Select");
+    error = QStringLiteral("V did not return to Select");
     return false;
   }
   QTest::mouseMove(&editor,
@@ -8174,12 +8382,18 @@ bool runKeyboardNudgeSmoke(QApplication &application, QString &error) {
   }
 
   // Arrow keys typed into the inline text editor edit text, not layers:
-  // with the rectangle still selected, open a text field and press Down.
+  // put down the selected rectangle, then open a text field and press Down.
   QTest::keyClick(&editor, Qt::Key_T);
   QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(500, 462));
   application.processEvents();
+  QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(500, 462));
+  application.processEvents();
+  if (!qobject_cast<QPlainTextEdit *>(QApplication::focusWidget())) {
+    error = QStringLiteral("Nudge fixture did not focus its text field");
+    return false;
+  }
   QTest::keyClick(QApplication::focusWidget(), Qt::Key_Down);
-  QTest::keyClick(QApplication::focusWidget(), Qt::Key_Escape);
+  QTest::keyClick(QApplication::focusWidget(), Qt::Key_Return, Qt::ControlModifier);
   settle();
   if (!snapshotMatches(drawn)) {
     error = QStringLiteral("Arrow key inside the text editor nudged a layer");
@@ -8990,7 +9204,7 @@ bool runCaptureControlsSmoke(QApplication &application, QString &error) {
     }
     // A stitched result is handed to the same editor and annotates like any
     // capture: the whole image is the selection, a drawn layer renders on it,
-    // and Esc then steps back rather than closing (the editor, not selecting).
+    // and V switches back to selecting layers without leaving the editor.
     QImage tall(400, 1800, QImage::Format_ARGB32);
     tall.fill(QColor(QStringLiteral("#204060")));
     scrollEditor.adoptStitchedForTest(tall);
@@ -9012,10 +9226,10 @@ bool runCaptureControlsSmoke(QApplication &application, QString &error) {
       error = QStringLiteral("Could not annotate the stitched image");
       return false;
     }
-    QTest::keyClick(&scrollEditor, Qt::Key_Escape);
+    QTest::keyClick(&scrollEditor, Qt::Key_V);
     application.processEvents();
     if (!scrollEditor.isVisible() || scrollEditor.selectingForTest()) {
-      error = QStringLiteral("Esc in the editor closed or left it");
+      error = QStringLiteral("V in the editor closed or left it");
       return false;
     }
     const QRectF scrollPill = scrollEditor.scrollPillRectForTest();
@@ -10195,6 +10409,10 @@ int main(int argc, char **argv) {
   if (!runEditorWindowConfigCheck(snapshotError)) {
     qWarning().noquote() << snapshotError;
     return 4;
+  }
+  if (!runPinEditorReturnChecks(application, snapshotError)) {
+    qCritical().noquote() << snapshotError;
+    return 65;
   }
   if (!runEditorHandoffRoundTrip(application, snapshotError)) {
     qWarning().noquote() << snapshotError;
@@ -11444,12 +11662,8 @@ int main(int argc, char **argv) {
   QTest::keyClick(&editor, Qt::Key_T);
   QTest::keyClick(&editor, Qt::Key_Escape);
   application.processEvents();
-  if (!editor.isVisible() || editor.cursor().shape() != Qt::ArrowCursor)
-    return 24;
-  QTest::keyClick(&editor, Qt::Key_Escape);
-  application.processEvents();
   if (editor.isVisible())
-    return 25;
+    return 24;
 
   QString savedPath;
   {
