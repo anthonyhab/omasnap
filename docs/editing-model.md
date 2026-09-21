@@ -47,9 +47,9 @@ happens, everything remains a log entry you can undo.
 Opening a pin for annotation leaves its compositor window in place. A private
 copy retains the pristine source and operation log; `Esc` commits any text draft,
 dismisses the annotator, and updates the pin's rendered preview. Reopening reads
-the source and log, so undo still works. Copying or dragging the pin shares only
-the rendered preview. The original user file is never overwritten, and the last
-pin/editor owner removes the private source, log, and preview together.
+the source and log, so undo still works. Copying, dragging, or revealing the pin
+shares only the rendered preview. The original user file is never overwritten,
+and the last pin/editor owner removes the private source, log, and preview together.
 
 Scrolling captures retain the monitor's scale when they become editable
 documents. Their native pixels stay intact; only the logical presentation size
