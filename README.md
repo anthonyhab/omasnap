@@ -169,7 +169,7 @@ Install the complete build/runtime dependency set:
 ```bash
 sudo pacman -S --needed \
   base-devel cmake ninja pkgconf qt6-base layer-shell-qt \
-  wayland wayland-protocols hyprland wl-clipboard \
+  wayland wayland-protocols hyprland wl-clipboard xdg-utils \
   tesseract tesseract-data-eng
 ```
 
@@ -538,7 +538,8 @@ processes.
 Hover the pin to reveal its controls and use its keyboard shortcuts; the cursor
 becomes a pointing hand over each button. **Edit** and **Copy** sit in the center
 of the image, with text labels and no tooltips. The pin button sits beside **×**
-at the top-right; the drag handle and file-path button sit at the top-left.
+at the top-right; the drag handle, file-path button, and folder button sit at
+the top-left.
 Icon buttons use compact, dark tooltips for their actions and shortcuts.
 Pins follow normal mouse focus while hovered and keep focus with the current
 app when first created.
@@ -559,16 +560,21 @@ Automatic expiry compacts the stack without transferring keyboard focus.
 | Drag the image background, `Super`+left-drag | Move the preview and keep it on screen, including when reordering the stack |
 | Edit button, `A` / `E` while hovered | Annotate the capture while keeping the same pin |
 | Link button, `L` / `F` while hovered | Save the capture if needed and copy its file path |
+| Folder button, `R` while hovered | Save the capture if needed and show it in the default file browser |
 | Copy button, `C` while hovered, `Ctrl+C` | Copy the full-resolution PNG |
 | Top-left six-dot drag handle | Drag the PNG into a file-capable drop target |
 | Wheel | Keep the fixed preview size |
 | Close button, `X` / `Super+W` while focused, `Esc`, middle-click | Close and focus the next pin |
 
 Image and path copying use `wl-copy` rather than `QClipboard`, so clipboard data remains
-available after the pin is closed. Copying a temporary capture's path first saves
-its PNG in the configured screenshots directory. Repeated copies reuse that file;
+available after the pin is closed. Copying a temporary capture's path or showing
+it in its folder first saves its PNG in the configured screenshots directory.
+Both actions reuse that file;
 closing or expiring the preview leaves the saved copy available. A pin opened from
 an existing file copies that file's original path.
+The folder button follows the default `inode/directory` application. It asks
+that application to select the screenshot through `FileManager1.ShowItems` when
+supported, otherwise opens the containing folder with `xdg-open`.
 
 Hyprland placement uses runtime dispatches and
 requires no user window rules. The controls use the annotation toolbar’s vector

@@ -168,7 +168,8 @@ it never waits for `hyprctl` during a drag. A runtime lock serializes placement
 across pin processes, with short-lived target reservations covering compositor
 animation latency. The initial monitor query uses the same worker pool; a fallback frame maps
 immediately and adopts the display-shaped size when the query finishes.
-Clipboard actions, saved copies for path sharing, editor launches, and drag
+Clipboard actions, saved copies for path sharing or revealing in a file browser,
+default-browser discovery and launch, editor launches, and drag
 payload preparation also run on workers. Final drag placement reports completion
 and retries a failed move;
 after repeated failures, the remaining stack closes the insertion gap.

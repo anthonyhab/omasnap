@@ -7,6 +7,8 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 
 ### Added
 
+- A folder button beside each preview or pin's link-copy button, plus `R` while
+  hovered, to save the shot if needed and reveal it in the default file browser.
 - A readable shortcuts card above the capture/editor canvas. Press `?` or click
   its header to collapse it; scroll the card when the screen is too short.
 - Press `E` (edit) or `A` (annotate) in the capture picker to toggle keeping
