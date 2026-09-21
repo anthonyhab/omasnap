@@ -2621,6 +2621,107 @@ bool runPostCaptureChecks(QString &error) {
     }
   }
 
+  // A flattened pin includes the backdrop and any canvas growth. Reopen it
+  // at that complete size, not the original selection's aspect ratio.
+  enum class PinOutput { Preview, Pin, Return };
+  for (const qreal scale : {1.0, 1.5, 2.0}) {
+    for (int layout = 0; layout < 4; ++layout) {
+      CaptureData framed;
+      framed.previewSize = {160, 120};
+      framed.monitor.geometry = {QPoint(), framed.previewSize};
+      framed.monitor.scale = scale;
+      framed.monitor.pixelSize = (QSizeF(framed.previewSize) * scale).toSize();
+      framed.source = QImage(framed.monitor.pixelSize,
+                              QImage::Format_ARGB32_Premultiplied);
+      framed.source.fill(Qt::white);
+      {
+        QPainter painter(&framed.source);
+        painter.scale(scale, scale);
+        painter.fillRect(QRectF(40, 30, 40, 40), Qt::blue);
+      }
+      OperationLog edits;
+      edits.previewSize = framed.previewSize;
+      Operation background;
+      background.type = Operation::Type::Background;
+      background.background = layout == 0 ? BackgroundStyle::Off
+                                           : BackgroundStyle::Aurora;
+      edits.ops.push_back(background);
+      if (layout >= 2) {
+        Annotation arrow;
+        arrow.id = 1;
+        arrow.kind = Annotation::Kind::Arrow;
+        arrow.start = layout == 2 ? QPointF(-100, 60) : QPointF(80, -100);
+        arrow.end = layout == 2 ? QPointF(260, 60) : QPointF(80, 220);
+        Operation layer;
+        layer.type = Operation::Type::Annotate;
+        layer.annotations = {arrow};
+        edits.ops.push_back(layer);
+        edits.nextId = 2;
+      }
+      edits.index = static_cast<int>(edits.ops.size());
+      for (const PinOutput output : {PinOutput::Preview, PinOutput::Pin,
+                                     PinOutput::Return}) {
+        QString pin;
+        std::shared_ptr<PinSnapshotFile> document;
+        if (output == PinOutput::Return) {
+          const QString sourcePath = pinnedSnapshotPath(1);
+          if (!savePinnedSnapshot(framed.source, sourcePath,
+                                    framed.previewSize, error))
+            return false;
+          document = std::make_shared<PinSnapshotFile>(sourcePath);
+          pin = document->previewPath();
+        }
+        const auto cleanup = qScopeGuard([&] {
+          if (!pin.isEmpty()) {
+            QFile::remove(pin);
+            QFile::remove(operationLogPath(pin));
+          }
+        });
+        CaptureEditor editor(framed, output == PinOutput::Preview
+                                         ? Mode::Fullscreen : Mode::File,
+                               output == PinOutput::Preview
+                                   ? QuickOutputMode::CopyAndPreview
+                                   : QuickOutputMode::None,
+                               edits);
+        editor.setSuppressSnapshots(true);
+        editor.setPinDocument(document);
+        editor.setProcessLauncherForTest(
+            [&](const QString &, const QStringList &args) {
+              pin = args.last();
+              return true;
+            });
+        editor.resize(800, 600);
+        editor.show();
+        const QImage expected = editor.renderCurrentOutput();
+        if (output == PinOutput::Preview)
+          editor.waitForExport();
+        else {
+          QTest::keyClick(&editor, output == PinOutput::Pin
+                                      ? Qt::Key_P : Qt::Key_Escape);
+          for (int attempt = 0; attempt < 500 && editor.isVisible(); ++attempt)
+            QTest::qWait(10);
+        }
+        OperationLog sidecar;
+        if (editor.isVisible() || pin.isEmpty() ||
+            !loadOperationLog(operationLogPath(pin), sidecar, error) ||
+            sidecar.previewSize != (QSizeF(expected.size()) / scale).toSize()) {
+          error = QStringLiteral("Pin output %1 reopened layout %2 at the wrong size at scale %3: %4x%5 for %6x%7 pixels")
+                      .arg(static_cast<int>(output)).arg(layout).arg(scale)
+                      .arg(sidecar.previewSize.width()).arg(sidecar.previewSize.height())
+                      .arg(expected.width()).arg(expected.height());
+          return false;
+        }
+        CaptureData reopened;
+        describeFileCapture(reopened, QImage(pin), sidecar);
+        CaptureEditor restored(reopened, Mode::File, QuickOutputMode::None, sidecar);
+        restored.setSuppressSnapshots(true);
+        if (restored.renderCurrentOutput().convertToFormat(expected.format()) != expected) {
+          error = QStringLiteral("Reopening a framed pin changed its exported pixels");
+          return false;
+        }
+      }
+    }
+  }
   // Explicit pinning stays on screen, including a text draft committed by
   // Ctrl+P before the renderer takes its snapshot.
   for (const bool textDraft : {false, true}) {

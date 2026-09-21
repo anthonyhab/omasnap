@@ -3383,8 +3383,9 @@ void CaptureEditor::pinSnapshot() {
         const QImage image =
             renderCapture(captureCopy, selection, annotations, background,
                           imageShadow, canvasBoundary, backdrop);
-        result.path = launchPinnedCapture(image, selection.size().toSize(),
-                                          false, PinLifetime::Persistent, result.error, launcher);
+        result.path = launchPinnedCapture(
+            image, renderedCaptureLogicalSize(captureCopy, image.size()),
+            false, PinLifetime::Persistent, result.error, launcher);
         return result;
       }));
 }
@@ -3569,7 +3570,7 @@ void CaptureEditor::dismissEditor() {
     // Commit the log last: its atomic replacement tells the pin that both
     // the preview and the editable document are ready to read.
     if (savePinnedSnapshot(image, document->previewPath(),
-                            selection.size().toSize(), error))
+                            renderedCaptureLogicalSize(capture, image.size()), error))
       static_cast<void>(saveOperationLog(operationLogPath(document->path()), log, error));
     return error;
   }));
@@ -4021,8 +4022,9 @@ void CaptureEditor::finish(OutputMode mode) {
                                        background, imageShadow,
                                        canvasBoundary, backdrop);
     if (mode == OutputMode::CopyAndPreview) {
-      static_cast<void>(launchPinnedCapture(image, selection.size().toSize(),
-                                            true, PinLifetime::Timed, result.error, launcher));
+      static_cast<void>(launchPinnedCapture(
+          image, renderedCaptureLogicalSize(captureCopy, image.size()),
+          true, PinLifetime::Timed, result.error, launcher));
       return result;
     }
     if (!image.isNull())
