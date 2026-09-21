@@ -33,6 +33,8 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 
 ### Fixed
 
+- Extend spotlight dimming across the live canvas while typing text outside
+  it, without waiting for the text to be committed.
 - A long label being typed can no longer end up shifted sideways with the
   start of every line cut off. Its box is always sized to the text, yet a
   sideways touchpad swipe over it, or Qt centring the caret at the end of a
