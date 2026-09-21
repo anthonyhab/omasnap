@@ -41,8 +41,10 @@
 #include <QPainterPath>
 #include <QPainterPathStroker>
 #include <QProcess>
+#include <QPromise>
 #include <QRandomGenerator>
 #include <QScreen>
+#include <QScopeGuard>
 #include <QScrollBar>
 #include <QTextBlock>
 #include <QTextLayout>
@@ -778,6 +780,23 @@ QPointF centeredCreationStart(CaptureEditor::Tool tool, const QPointF &center,
   return center * 2.0 - end;
 }
 
+namespace {
+// Called only from output workers. History is independent of clipboard/save
+// success and never takes ownership of the live preview or working snapshot.
+void rememberCapture(RecentSnapWriter &writer, const QImage &source,
+                     const OperationLog &log,
+                     const QImage &rendered,
+                     const std::optional<RecentSnap> &previous) {
+  QString error;
+  if (writer.record(source, log, rendered, error)) {
+    if (previous)
+      removeRecentSnap(*previous);
+  } else {
+    qWarning().noquote() << error;
+  }
+}
+} // namespace
+
 CaptureEditor::CaptureEditor(CaptureData capture, CaptureMode mode,
                              QuickOutputMode quickOutput, OperationLog log,
                              QWidget *parent, bool windowedHandoff)
@@ -787,6 +806,8 @@ CaptureEditor::CaptureEditor(CaptureData capture, CaptureMode mode,
   startupTimingMark("CaptureEditor constructor entered");
   pristineSource_ = capture_.source;
   pristineLogicalSize_ = capture_.previewSize;
+  recentId_ = log.recentId.isEmpty() ? QUuid::createUuid().toString(QUuid::Id128)
+                                     : log.recentId;
   paletteConfig_ = loadPaletteConfig(defaultConfigPath());
   startupTimingMark("palette config loaded");
   customColor_ = paletteConfig_.custom;
@@ -912,7 +933,7 @@ CaptureEditor::CaptureEditor(CaptureData capture, CaptureMode mode,
     });
   });
 
-  connect(&finishWatcher_, &QFutureWatcher<FinishResult>::finished, this,
+  connect(&finishWatcher_, &QFutureWatcher<FinishResult>::resultReadyAt, this,
           [this] { completeFinish(finishWatcher_.result()); });
 
   connect(&reopenWatcher_, &QFutureWatcher<ReopenResult>::finished, this,
@@ -980,7 +1001,7 @@ CaptureEditor::CaptureEditor(CaptureData capture, CaptureMode mode,
             emit captureReady(true, {});
           });
 
-  connect(&pinWatcher_, &QFutureWatcher<PinResult>::finished, this, [this] {
+  connect(&pinWatcher_, &QFutureWatcher<PinResult>::resultReadyAt, this, [this] {
     pinPending_ = false;
     const PinResult result = pinWatcher_.result();
     if (result.path.isEmpty()) {
@@ -1079,6 +1100,14 @@ CaptureEditor::CaptureEditor(CaptureData capture, CaptureMode mode,
 }
 
 CaptureEditor::~CaptureEditor() {
+  // Output completion closes the window before history compression finishes.
+  // Drain those value-only workers after the surface has gone; main releases
+  // the instance lock first so another capture cannot terminate this save.
+  disconnect(&finishWatcher_, nullptr, this, nullptr);
+  disconnect(&pinWatcher_, nullptr, this, nullptr);
+  finishWatcher_.waitForFinished();
+  pinWatcher_.waitForFinished();
+  dismissFuture_.waitForFinished();
   // Never remove the working snapshot under an in-flight write; drain the
   // current render (dropping any coalesced follow-up) before cleanup.
   snapshotDirty_ = false;
@@ -2824,10 +2853,29 @@ QString CaptureEditor::workingLogPath() const {
   return snapshotPath_.isEmpty() ? QString() : operationLogPath(snapshotPath_);
 }
 
+OperationLog CaptureEditor::currentOperationLog() const {
+  OperationLog log{ops_, opIndex_, nextAnnotationId_, nextMarker_,
+                   pristineLogicalSize_, recentId_};
+  // Quick capture skips enterEdit(), where the initial crop is normally
+  // committed. Retain that selection so the shelf reopens the captured area.
+  if (phase_ == Phase::Export && !selection_.isEmpty() &&
+      selection_ != QRectF(QPointF(), pristineLogicalSize_)) {
+    log.ops.resize(log.index);
+    Operation crop;
+    crop.type = Operation::Type::Crop;
+    crop.crop = selection_;
+    log.ops.push_back(crop);
+    log.index = log.ops.size();
+  }
+  return log;
+}
+
 bool CaptureEditor::restoreOperationLog(const QString &path, QString &error) {
   OperationLog log;
   if (!loadOperationLog(path, log, error))
     return false;
+  if (!log.recentId.isEmpty())
+    recentId_ = log.recentId;
   ops_ = std::move(log.ops);
   opIndex_ = std::clamp(log.index, 0, static_cast<int>(ops_.size()));
   nextAnnotationId_ = std::max<quint64>(log.nextId, 1);
@@ -3240,8 +3288,7 @@ void CaptureEditor::startSnapshotRender() {
   const QImage source = capture_.source;
   const QString path = snapshotPath_;
   const QString logPath = operationLogPath(path);
-  const OperationLog log{ops_, opIndex_, nextAnnotationId_, nextMarker_,
-                         pristineLogicalSize_};
+  const OperationLog log = currentOperationLog();
   const bool writeSource = !sourceWritten_ || !QFile::exists(path);
   snapshotWatcher_.setFuture(QtConcurrent::run(
       [source, path, logPath, log, writeSource] {
@@ -3265,8 +3312,8 @@ bool CaptureEditor::waitForSnapshot() {
 
 void CaptureEditor::waitForExport() {
   QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
-  // Wait for the worker, then let the queued finished() signal reach
-  // completeFinish(). On success that closes the editor; busy_ stays set.
+  // Wait for output and its subsequent history write, letting the queued
+  // resultReadyAt() signal reach completeFinish() and close the editor first.
   while (finishWatcher_.isRunning()) {
     QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
     QThread::yieldCurrentThread();
@@ -3291,8 +3338,7 @@ void CaptureEditor::handOffEditor(bool toWindow) {
   // Persist a value snapshot directly: waiting for the autosave and copying
   // its files would block input and race later coalesced snapshot writes.
   const QImage source = pristineSource_;
-  const OperationLog log{ops_, opIndex_, nextAnnotationId_, nextMarker_,
-                         pristineLogicalSize_};
+  const OperationLog log = currentOperationLog();
   const QString program = QCoreApplication::applicationFilePath();
   const auto launcher = processLauncher_;
   const auto pinDocument = pinDocument_;
@@ -3369,6 +3415,9 @@ void CaptureEditor::pinSnapshot() {
   pinPending_ = true;
   setStatus(QStringLiteral("Preparing pinned capture…"));
   const CaptureData captureCopy = capture_;
+  const QImage source = pristineSource_;
+  const OperationLog log = currentOperationLog();
+  const auto previous = editingRecent_;
   const QVector<Annotation> annotations = annotations_;
   const QRectF selection = selection_;
   const BackgroundStyle background = backgroundStyle_;
@@ -3377,16 +3426,18 @@ void CaptureEditor::pinSnapshot() {
   const QImage backdrop = customBackdrop_;
   const auto launcher = processLauncher_;
   pinWatcher_.setFuture(QtConcurrent::run(
-      [captureCopy, annotations, selection, background, imageShadow,
-       canvasBoundary, backdrop, launcher] {
+      [captureCopy, source, log, previous, annotations, selection, background,
+       imageShadow, canvasBoundary, backdrop, launcher](QPromise<PinResult> &completion) {
         PinResult result;
+        RecentSnapWriter recent(log.recentId);
         const QImage image =
             renderCapture(captureCopy, selection, annotations, background,
                           imageShadow, canvasBoundary, backdrop);
         result.path = launchPinnedCapture(
             image, renderedCaptureLogicalSize(captureCopy, image.size()),
-            false, PinLifetime::Persistent, result.error, launcher);
-        return result;
+            false, PinLifetime::Persistent, result.error, launcher, log.recentId);
+        completion.addResult(result);
+        rememberCapture(recent, source, log, image, previous);
       }));
 }
 
@@ -3528,52 +3579,62 @@ void CaptureEditor::cancelEditInteraction() {
   update();
 }
 
-void CaptureEditor::dismissEditor() {
-  if (!pinDocument_) {
+void CaptureEditor::dismissEditor(bool remember) {
+  if (!pinDocument_ && (!remember || phase_ != Phase::Edit || selection_.isEmpty())) {
     close();
     return;
   }
-  // The pin keeps its source, position and lifetime. Only its rendered preview
-  // changes; the separate operation log keeps every annotation undoable.
+  // Keep the completed capture even if no Copy/Save action was used. An
+  // originating pin also receives its preview and editable log as before.
   endNudgeRun();
   busy_ = true;
   setEnabled(false);
-  setStatus(QStringLiteral("Returning to pinned capture…"));
+  setStatus(pinDocument_ ? QStringLiteral("Returning to pinned capture…")
+                        : QStringLiteral("Keeping recent capture…"));
   const auto document = pinDocument_;
   const CaptureData capture = capture_;
+  const QImage source = pristineSource_;
+  const auto previous = editingRecent_;
   const QRectF selection = selection_;
   const auto annotations = annotations_;
   const auto background = backgroundStyle_;
   const bool shadow = imageShadow_;
   const auto boundary = canvasBoundaryMode_;
   const QImage backdrop = customBackdrop_;
-  const OperationLog log{ops_, opIndex_, nextAnnotationId_, nextMarker_,
-                         pristineLogicalSize_};
+  const OperationLog log = currentOperationLog();
   auto *watcher = new QFutureWatcher<QString>(this);
-  connect(watcher, &QFutureWatcher<QString>::finished, this, [this, watcher] {
+  connect(watcher, &QFutureWatcher<QString>::resultReadyAt, this, [this, watcher] {
     const QString error = watcher->result();
     watcher->deleteLater();
+    busy_ = false;
+    setEnabled(true);
     if (error.isEmpty())
       close();
-    else {
-      busy_ = false;
-      setEnabled(true);
+    else
       setStatus(error);
-    }
   });
-  watcher->setFuture(QtConcurrent::run(
-      [document, capture, selection, annotations, background, shadow, boundary,
-       backdrop, log] {
+  dismissFuture_ = QtConcurrent::run(
+      [document, capture, source, previous, remember, selection, annotations,
+       background, shadow, boundary, backdrop, log](QPromise<QString> &completion) {
     QString error;
+    // Reserve before updating the pin: an immediate Edit waits for its full
+    // working document rather than opening an older or flattened version.
+    std::optional<RecentSnapWriter> recent;
+    if (remember)
+      recent.emplace(log.recentId);
     const QImage image = renderCapture(capture, selection, annotations, background,
                                        shadow, boundary, backdrop);
     // Commit the log last: its atomic replacement tells the pin that both
     // the preview and the editable document are ready to read.
-    if (savePinnedSnapshot(image, document->previewPath(),
-                            renderedCaptureLogicalSize(capture, image.size()), error))
+    if (document && savePinnedSnapshot(image, document->previewPath(),
+                            renderedCaptureLogicalSize(capture, image.size()),
+                            error, log.recentId))
       static_cast<void>(saveOperationLog(operationLogPath(document->path()), log, error));
-    return error;
-  }));
+    completion.addResult(error);
+    if (recent)
+      rememberCapture(*recent, source, log, image, previous);
+  });
+  watcher->setFuture(dismissFuture_);
 }
 
 void CaptureEditor::chooseWindow(int index) {
@@ -3995,6 +4056,12 @@ void CaptureEditor::finish(OutputMode mode) {
   if (busy_ || selection_.isEmpty())
     return;
   busy_ = true;
+  const bool snapshotsSuppressed = suppressSnapshots_;
+  suppressSnapshots_ = true;
+  snapshotDirty_ = false;
+  QFuture<bool> pendingSnapshot = snapshotWatcher_.future();
+  const QString workingSource = snapshotPath_;
+  const QString workingLog = workingLogPath();
   setStatus(mode == OutputMode::Copy || mode == OutputMode::CopyAndPreview
                                      ? QStringLiteral("Copying screenshot…")
                                      : QStringLiteral("Saving screenshot…"));
@@ -4003,6 +4070,9 @@ void CaptureEditor::finish(OutputMode mode) {
   // overlay keeps painting (and its status stays readable) while a tall
   // scroll capture grinds through libpng.
   const CaptureData captureCopy = capture_;
+  const QImage source = pristineSource_;
+  const OperationLog log = currentOperationLog();
+  const auto previous = editingRecent_;
   const QRectF selection = selection_;
   const QVector<Annotation> annotations = annotations_;
   const BackgroundStyle background = backgroundStyle_;
@@ -4012,25 +4082,39 @@ void CaptureEditor::finish(OutputMode mode) {
   const QString appSlug =
       appFilenameSlug(dominantAppClass(capture_.windows, selection_));
   const auto launcher = processLauncher_;
-  finishWatcher_.setFuture(QtConcurrent::run([captureCopy, selection,
+  finishWatcher_.setFuture(QtConcurrent::run([captureCopy, source, log, previous, selection,
                                               annotations, background,
                                               imageShadow, canvasBoundary,
-                                              backdrop, appSlug, mode, launcher]() {
+                                              backdrop, appSlug, mode, launcher,
+                                              snapshotsSuppressed, pendingSnapshot,
+                                              workingSource, workingLog](QPromise<FinishResult> &completion) mutable {
     FinishResult result;
     result.mode = mode;
+    result.snapshotsSuppressed = snapshotsSuppressed;
+    RecentSnapWriter recent(log.recentId);
+    const auto cleanWorkingDocument = [&] {
+      pendingSnapshot.waitForFinished();
+      if (!workingLog.isEmpty())
+        QFile::remove(workingLog);
+      if (!workingSource.isEmpty())
+        QFile::remove(workingSource);
+    };
     const QImage image = renderCapture(captureCopy, selection, annotations,
                                        background, imageShadow,
                                        canvasBoundary, backdrop);
+    const auto retainAfterOutput = qScopeGuard([&] {
+      startupTimingMark("capture output ready");
+      completion.addResult(result);
+      rememberCapture(recent, source, log, image, previous);
+      if (result.error.isEmpty())
+        cleanWorkingDocument();
+    });
     if (mode == OutputMode::CopyAndPreview) {
       static_cast<void>(launchPinnedCapture(
           image, renderedCaptureLogicalSize(captureCopy, image.size()),
-          true, PinLifetime::Timed, result.error, launcher));
-      return result;
+          true, PinLifetime::Timed, result.error, launcher, log.recentId));
+      return;
     }
-    if (!image.isNull())
-      result.thumbnail = image.scaled(kRecentThumbEdge, kRecentThumbEdge,
-                                      Qt::KeepAspectRatio,
-                                      Qt::SmoothTransformation);
     const QString exportPath = temporaryExportPath();
     QString error;
     if (image.isNull() || exportPath.isEmpty() ||
@@ -4038,13 +4122,13 @@ void CaptureEditor::finish(OutputMode mode) {
       result.error = error.isEmpty()
                          ? QStringLiteral("Could not prepare screenshot snapshot")
                          : error;
-      return result;
+      return;
     }
     if (mode == OutputMode::Copy || mode == OutputMode::Both) {
       if (!copyPngFileToClipboard(exportPath, error)) {
         QFile::remove(exportPath);
         result.error = error;
-        return result;
+        return;
       }
     }
     if (mode == OutputMode::Save || mode == OutputMode::Both) {
@@ -4052,49 +4136,31 @@ void CaptureEditor::finish(OutputMode mode) {
       if (result.saved.isEmpty()) {
         QFile::remove(exportPath);
         result.error = error;
-        return result;
+        return;
       }
     } else {
       QFile::remove(exportPath);
     }
-    return result;
   }));
 }
 
 void CaptureEditor::completeFinish(const FinishResult &result) {
   if (!result.error.isEmpty()) {
     busy_ = false;
+    suppressSnapshots_ = result.snapshotsSuppressed;
     if (phase_ == Phase::Export) {
       quickOutputMode_ = QuickOutputMode::None;
       enterEdit(result.error);
     } else {
+      scheduleSnapshot();
       setStatus(result.error);
     }
     return;
   }
-  if (!snapshotPath_.isEmpty()) {
-    // The working document moves onto the recents shelf rather than being
-    // thrown away: the select overlay offers it back, layers still editable.
-    // Drain the last background write first so the log is the final state
-    // (and so it cannot reappear a moment after the editor closed).
-    QString recentError;
-    const bool drained = waitForSnapshot();
-    snapshotDirty_ = false;
-    if (drained && recordRecentSnap(snapshotPath_, workingLogPath(),
-                                    result.thumbnail, recentError)) {
-      if (editingRecent_)
-        removeRecentSnap(*editingRecent_);
-    } else {
-      if (!recentError.isEmpty())
-        qWarning().noquote() << recentError;
-      QFile::remove(workingLogPath());
-      QFile::remove(snapshotPath_);
-    }
-    snapshotPath_.clear();
-  }
+  snapshotPath_.clear();
   if (result.mode == OutputMode::CopyAndPreview) {
     // The pin is the completion UI; a second notification would repeat it.
-    dismissEditor();
+    dismissEditor(false);
     return;
   }
   if (result.mode == OutputMode::Copy)
@@ -4104,7 +4170,7 @@ void CaptureEditor::completeFinish(const FinishResult &result) {
   else
     sendCaptureNotification(QStringLiteral("Screenshot saved and copied"),
                             result.saved);
-  dismissEditor();
+  dismissEditor(false);
 }
 
 void CaptureEditor::handleToolbar(const QString &action) {
@@ -6619,6 +6685,10 @@ void CaptureEditor::adoptStitched(const QImage &image) {
 void CaptureEditor::adoptImage(QImage image, OperationLog log, CaptureMode kind,
                                const QString &status) {
   pinDocument_.reset();
+  recentId_ = log.recentId.isEmpty() ? QUuid::createUuid().toString(QUuid::Id128)
+                                     : log.recentId;
+  if (kind == CaptureMode::Scroll)
+    editingRecent_.reset();
   // The editor normally works on a region of the frozen screen. Here it is
   // handed an image instead (a stitched scroll, a shelved capture, a file)
   // and edits that: the image is the whole capture, at the scale its log was
@@ -6983,6 +7053,9 @@ void CaptureEditor::completeReopenRecent(const ReopenResult &result) {
     return;
   }
   editingRecent_ = result.recent;
+  // The shelf is always an edit action, even when this overlay normally
+  // copies fresh captures straight into timed previews.
+  quickOutputMode_ = QuickOutputMode::None;
   adoptImage(result.image, result.log, CaptureMode::Region,
              QStringLiteral("Reopened recent capture · Copy/Save to output"));
 }

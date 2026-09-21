@@ -312,12 +312,15 @@ words after a trailing `--exec`, which the shell runs directly without shell par
 
 ### Recent captures
 
-Every capture finished from the editor (copied, saved, or both) keeps its working
-document, source plus operation log, on a shelf of the five most recent under
+Every completed capture keeps its working document, source plus operation log,
+on a shelf of the five most recent under
 `~/.local/state/omasnap/recent/` (`OMASNAP_RECENT_DIR` overrides). The select
 overlay shows them as a small stack of cards on the right; hovering fans them out
 and clicking one reopens that capture in the editor, undo history intact, in place
-of a new screenshot. Finishing a reopened capture replaces its shelf entry.
+of a new screenshot. No annotation, Copy, Save, or pin action is required: the
+shot remains available after its floating preview expires or closes. Dismissing
+the editor with `Esc` also remembers its current edits. Editing the same shot
+updates its existing entry; cancelling before selecting a capture adds nothing.
 
 ### Theme
 
@@ -614,7 +617,8 @@ OMASNAP_PROFILE_STARTUP=1 ./build/omasnap 2>startup.log
 ```
 
 The trace also breaks native capture into Wayland registry, buffer allocation, frame wait,
-and pixel handoff stages. It is completely silent by default.
+and pixel handoff stages, and marks output readiness separately from subsequent
+recent-history persistence. It is completely silent by default.
 
 `.github/workflows/build-linux.yml` runs the same `make check` build, interaction smoke,
 and available static-analysis checks in an Arch Linux container, stages the CMake installation, and uploads a versioned Linux

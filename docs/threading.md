@@ -28,12 +28,27 @@ reading its corresponding worker:
 |---|---|
 | `captureWatcher_` | Reads window/monitor pixels via `captureMonitorPixels` |
 | `ocrWatcher_` | Renders the OCR crop and runs `tesseract` |
-| `finishWatcher_` | Renders the export, encodes PNG, does the clipboard round trip, moves the file |
+| `finishWatcher_` | Renders/encodes the export, copies/saves/launches the preview, then records the recent document |
 | `snapshotWatcher_` | Writes the crash-recovery working snapshot + operation log |
-| `pinWatcher_` | Renders the image for a pinned compositor window |
+| `pinWatcher_` | Renders and launches a pinned compositor window, then records the capture |
 | `recentsWatcher_` | Lists and decodes thumbnails for the recents shelf |
 | `backdropWatcher_` | Decodes an optional user-supplied backdrop image |
 | `highlighterProbeWatcher_` | Detects a nearby screenshot text row for highlighter Snap mode |
+
+Editor dismissal also uses a worker, tracked by `dismissFuture_`, to return edits
+to an originating pin and retain the recent document. Output workers publish
+their result through `QPromise` as soon as output is ready: `resultReadyAt` closes
+the overlay before full-monitor history compression. The worker continues saving
+the pristine source/log/thumbnail, and editor destruction drains it after the
+window has closed. `main()` releases the instance lock first, so a rapid second
+capture cannot terminate the pending save or be mistaken for cancelling an overlay.
+
+A per-capture reservation is acquired before launching/updating the preview.
+Immediate Edit and shelf-loading workers wait for it to finish, preserving the
+original layers even while history is being encoded. Different captures encode
+independently; only thumbnail publication and pruning use the shared shelf lock.
+The thumbnail is published last, after its source and log are complete. No
+full-resolution file is moved or PNG-encoded in the completion signal handler.
 
 `src/scroll-capture.cpp` follows the same rule with a plain `QFuture<void>`:
 the capture loop (grab → crop → classify → accumulate) runs on a worker

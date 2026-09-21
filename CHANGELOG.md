@@ -18,6 +18,9 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 
 ### Changed
 
+- Remember the latest five completed captures even after their previews expire,
+  without requiring annotation, copying, saving, or pinning. Recent cards always
+  reopen for annotation, and further edits update the same entry.
 - Keep a subtle dotted image boundary visible with every tool, with crop handles
   available only in Select mode when no annotation is selected.
 - Framed canvas growth keeps 15 px of mat beyond a layer that outgrows the
@@ -39,6 +42,8 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 
 ### Fixed
 
+- Show the corner preview and dismiss the overlay before saving the full-resolution
+  recent document, removing the extra history-compression pause after capture.
 - Preserve image proportions when reopening a pin or preview whose backdrop
   or annotations expanded the original capture.
 - Extend spotlight dimming across the live canvas while typing text outside

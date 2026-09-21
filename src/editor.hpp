@@ -232,8 +232,7 @@ private:
     OutputMode mode = OutputMode::Copy;
     QString saved;
     QString error;
-    /// Small flattened preview for the recents shelf.
-    QImage thumbnail;
+    bool snapshotsSuppressed = false;
   };
   /// What reopening a shelved capture reads off disk: the full-resolution
   /// source plus its operation log. Loaded on the worker pool, not the UI
@@ -559,7 +558,8 @@ private:
   /// Back from the editor to the select phase: the op log is dropped and the
   /// frozen screen is offered again for a new region or window.
   void returnToSelect();
-  void dismissEditor();
+  void dismissEditor(bool remember = true);
+  [[nodiscard]] OperationLog currentOperationLog() const;
   void cancelEditInteraction();
   /// Scroll capture takes over the surface with `region` drawn.
   void startScrollCapture(const QRect &region);
@@ -736,6 +736,7 @@ private:
   /// Coordinate space used by the capture being edited.
   CaptureMode editedMode_ = CaptureMode::Region;
   std::optional<RecentSnap> editingRecent_;
+  QString recentId_;
   QVector<RecentSnap> recents_;
   QFutureWatcher<QVector<RecentSnap>> recentsWatcher_;
   bool recentsLoading_ = false;
@@ -946,6 +947,7 @@ private:
   QColor textColor_;
   QFutureWatcher<OcrResult> ocrWatcher_;
   QFutureWatcher<FinishResult> finishWatcher_;
+  QFuture<QString> dismissFuture_;
   QFutureWatcher<ReopenResult> reopenWatcher_;
   QFutureWatcher<QImage> backdropWatcher_;
   bool reopenPending_ = false;
