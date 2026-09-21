@@ -73,6 +73,18 @@ public:
     // a word too long to fit. The width clamp decides when wrapping bites.
     setLineWrapMode(QPlainTextEdit::NoWrap);
     document()->setDocumentMargin(0);
+    // The box is always sized to its text, so it never has anywhere to scroll.
+    // Qt does not know that: with wrapping laid out by hand it takes the draft
+    // to be as wide as its longest paragraph unwrapped, which leaves the
+    // hidden bars a range. Centring the caret at the end of a full line, or a
+    // sideways swipe on a touchpad over the box, would then shift every line
+    // out from under its pill, and nothing would bring them back.
+    for (QScrollBar *bar : {horizontalScrollBar(), verticalScrollBar()}) {
+      connect(bar, &QScrollBar::valueChanged, bar, [bar](int value) {
+        if (value != 0)
+          bar->setValue(0);
+      });
+    }
   }
   using QPlainTextEdit::cursorRect;
   using QPlainTextEdit::setViewportMargins;
@@ -334,6 +346,13 @@ constexpr qreal kEdgeGrabTolerance = 12.0;
 
 bool showsSelectionBounds(Annotation::Kind kind) {
   return kind != Annotation::Kind::Arrow && kind != Annotation::Kind::Line;
+}
+
+bool showsSpotlight(const QVector<Annotation> &annotations) {
+  return std::any_of(annotations.cbegin(), annotations.cend(),
+                     [](const Annotation &annotation) {
+                       return annotation.kind == Annotation::Kind::Spotlight;
+                     });
 }
 
 bool isStrokeKind(Annotation::Kind kind) {
@@ -2712,14 +2731,18 @@ void CaptureEditor::refreshCanvasRect() {
   clampViewOffset();
 }
 
-bool CaptureEditor::canvasGrown() const {
-  if (selection_.isEmpty() || canvasRect_.isEmpty())
+bool CaptureEditor::exceedsSourceFrame(const QRectF &canvas) const {
+  if (selection_.isEmpty() || canvas.isEmpty())
     return false;
   const QRectF sourceFrame(QPointF(), selection_.size());
-  return canvasRect_.left() < sourceFrame.left() - 0.001 ||
-         canvasRect_.top() < sourceFrame.top() - 0.001 ||
-         canvasRect_.right() > sourceFrame.right() + 0.001 ||
-         canvasRect_.bottom() > sourceFrame.bottom() + 0.001;
+  return canvas.left() < sourceFrame.left() - 0.001 ||
+         canvas.top() < sourceFrame.top() - 0.001 ||
+         canvas.right() > sourceFrame.right() + 0.001 ||
+         canvas.bottom() > sourceFrame.bottom() + 0.001;
+}
+
+bool CaptureEditor::canvasGrown() const {
+  return exceedsSourceFrame(canvasRect_);
 }
 
 BackgroundStyle CaptureEditor::effectiveBackgroundStyle() const {
@@ -3638,6 +3661,27 @@ void CaptureEditor::layoutTextEditor() {
 
 bool CaptureEditor::textEditing() const {
   return textEditor_ && textEditor_->isVisible();
+}
+
+Annotation CaptureEditor::draftTextAnnotation() const {
+  Annotation draft;
+  draft.kind = Annotation::Kind::Text;
+  draft.size = textSize_;
+  draft.textFont = textEditFont_;
+  draft.text = textEditor_->toPlainText();
+  draft.color = textColor_;
+  draft.textBackground =
+      textEditPill_ ? TextBackground::Pill
+      : editingAnnotation_ >= 0 && editingAnnotation_ < annotations_.size()
+          ? annotations_.at(editingAnnotation_).textBackground
+          : textBackground_;
+  const QFontMetricsF metrics(annotationTextFont(textSize_, textEditFont_));
+  draft.start = textPoint_ + QPointF(0, metrics.ascent());
+  // The width the draft wraps to now: its own, or the room left before the
+  // settled canvas edge, which is the shape acceptText() freezes on commit.
+  draft.textWidth = textEditWrapWidth_;
+  draft.textWidth = annotationTextWrapWidth(draft, canvasRect_.right());
+  return draft;
 }
 
 void CaptureEditor::beginText(const QPointF &point, int annotationIndex,
@@ -4606,7 +4650,190 @@ void CaptureEditor::leaveEvent(QEvent *event) {
   update();
 }
 
-QRegion CaptureEditor::pointerMotionRegion(const QPointF &point) const {
+CaptureEditor::LiveLayers
+CaptureEditor::liveLayers(const QPointF &pointer) const {
+  const bool markerPreview = tool_ == Tool::Marker && !dragging_ &&
+                             canStartAnnotationAt(pointer) &&
+                             !pointerGrabsLayer();
+  LiveLayers live;
+  live.annotations.reserve(annotations_.size() + 1);
+  for (int index = 0; index < annotations_.size(); ++index) {
+    if (index == editingAnnotation_)
+      continue;
+    if (annotationLayer(annotations_.at(index).kind) ==
+        AnnotationLayer::Default)
+      live.annotations.push_back(annotations_.at(index));
+  }
+  if (dragging_ && interaction_ == Interaction::None &&
+      tool_ != Tool::Select && tool_ != Tool::Redact &&
+      tool_ != Tool::Cut) {
+    Annotation preview;
+    if (tool_ == Tool::Freehand || tool_ == Tool::Highlighter) {
+      preview.kind = tool_ == Tool::Highlighter ? Annotation::Kind::Highlighter
+                                                : Annotation::Kind::Freehand;
+      preview.points = freehandPoints_;
+    } else {
+      if (tool_ == Tool::Spotlight) {
+        preview.kind = Annotation::Kind::Spotlight;
+        preview.magnification = spotlightMagnification_;
+        preview.spotlightShape = spotlightShape_;
+      } else if (tool_ == Tool::Text) {
+        // The box being dragged: its height is how many lines it will hold.
+        preview.kind = Annotation::Kind::Rectangle;
+        preview.cornerRadius = 2.0;
+      } else {
+        preview.kind = dragShapeKind(tool_);
+        if (tool_ == Tool::Arrow)
+          preview.arrowStyle = arrowStyle_;
+        if (tool_ == Tool::Rectangle || tool_ == Tool::Ellipse)
+          preview.filled = fillShapes_;
+        if (tool_ == Tool::Rectangle)
+          preview.cornerRadius = cornerRadius_;
+      }
+      const QLineF span =
+          creationSpan(toUnclampedAnnotationPoint(pointer));
+      preview.start = span.p1();
+      preview.end = span.p2();
+    }
+    preview.color = tool_ == Tool::Ocr ? chromeTheme().accent : annotationColor();
+    if (tool_ == Tool::Text)
+      preview.color.setAlpha(150);
+    preview.size = tool_ == Tool::Ocr         ? 2.0
+                   : tool_ == Tool::Text      ? 1.0
+                   : tool_ == Tool::Spotlight ? spotlightBorder_
+                   : tool_ == Tool::Highlighter && highlighterLock_
+                       ? highlighterLock_->annotationSize
+                       : annotationSize_;
+    live.preview = static_cast<int>(live.annotations.size());
+    live.annotations.push_back(std::move(preview));
+  } else if (markerPreview) {
+    // The ghost counter shows where the next one would land, so it belongs
+    // only where the press would actually place one: over another counter the
+    // press moves that counter instead.
+    Annotation preview;
+    preview.kind = Annotation::Kind::Marker;
+    preview.start = markerPlacementPoint(pointer);
+    preview.number = nextMarker_;
+    preview.color = annotationColor();
+    preview.color.setAlpha(185);
+    preview.size = annotationSize_;
+    live.preview = static_cast<int>(live.annotations.size());
+    live.annotations.push_back(std::move(preview));
+  }
+  live.carried =
+      dragging_ || (markerPreview && !editImageRect().contains(pointer));
+  return live;
+}
+
+CaptureEditor::LiveCanvas
+CaptureEditor::liveCanvas(const LiveLayers &live) const {
+  // A carried layer previews the canvas it would settle to, and a spotlight
+  // dims and samples that canvas whether or not anything is carried.
+  // Everything else paints against the settled canvas. Framed previews only
+  // a layer being drawn or carried: its frame surrounds the whole image, and
+  // a hovering counter ghost must not pop that in and out at the image edge.
+  const bool layerDrag = dragging_ && interaction_ < Interaction::CropTopLeft &&
+                         !marqueeSelecting_;
+  // A label being typed is a layer in all but the log: the canvas makes room
+  // the moment its caret lands outside and keeps pace with every keystroke,
+  // rather than flashing away when the drag that placed it ends.
+  const bool typing = textEditing();
+  LiveCanvas canvas;
+  canvas.previews = typing ||
+                    (canvasBoundaryMode_ == CanvasBoundaryMode::Framed
+                         ? layerDrag
+                         : live.carried);
+  if (canvas.previews || showsSpotlight(live.annotations)) {
+    QVector<Annotation> layers = live.annotations;
+    if (typing)
+      layers.push_back(draftTextAnnotation());
+    canvas.rect =
+        captureCanvasRect(selection_.size(), layers, canvasBoundaryMode_);
+  } else {
+    canvas.rect = canvasRect_;
+  }
+  // Framed growth with no backdrop chosen gets the window-gray mat, as
+  // effectiveBackgroundStyle() gives the canvas once it has settled. That
+  // asks about the settled canvas, though, and this one may already be back
+  // inside the image while the settled one is still grown: then the mat, and
+  // the backing and card shadow that come with one, are gone here too.
+  const bool automaticMat =
+      canvasBoundaryMode_ == CanvasBoundaryMode::Framed &&
+      backgroundStyle_ == BackgroundStyle::None &&
+      exceedsSourceFrame(canvas.rect);
+  canvas.backdrop = automaticMat ? BackgroundStyle::Slate : backgroundStyle_;
+  canvas.dimmed = std::any_of(live.annotations.cbegin(),
+                              live.annotations.cend(),
+                              [&canvas](const Annotation &annotation) {
+                                return spotlightOpens(annotation, canvas.rect);
+                              });
+  return canvas;
+}
+
+QRegion CaptureEditor::liveCanvasDamage(const LiveCanvas &before,
+                                        const LiveCanvas &after) const {
+  if (before == after)
+    return {};
+  // The mat is laid out against the live canvas, so a canvas that grows or
+  // shrinks repaints all of it, not only the strip a carried layer happens to
+  // cover. A spotlight's dimming spans the whole live canvas too: it arrives
+  // with the first pixel of a lens being dragged out. Only the image itself
+  // is sure to look the same under either canvas.
+  const QRectF sourceFrame = sourceFrameWidgetRect();
+  const qreal scale = std::max<qreal>(editScale(), 0.001);
+  const auto widgetRect = [&](const QRectF &canvas) {
+    return QRectF(sourceFrame.topLeft() + canvas.topLeft() * scale,
+                  canvas.size() * scale);
+  };
+  QRegion damage(widgetRect(before.rect.united(after.rect))
+                     .adjusted(-2, -2, 2, 2)
+                     .toAlignedRect());
+  // The image hides the mat except through the rounded corners it has while
+  // framed at rest, so that much of its edge is never sure to be unchanged.
+  const qreal corner = kCaptureImageRadius * scale + 2.0;
+  const auto flat = [](BackgroundStyle style) {
+    return style == BackgroundStyle::None || style == BackgroundStyle::Off ||
+           style == BackgroundStyle::Slate;
+  };
+  const bool sameFlatFill =
+      before.backdrop == after.backdrop && flat(after.backdrop);
+  if (sameFlatFill && before.dimmed == after.dimmed) {
+    // A flat mat, dimmed or not, looks the same wherever both canvases have
+    // it, so only the strips between them repaint. Lenses are the exception:
+    // what one magnifies is placed against the canvas it sits in.
+    damage -= QRegion(widgetRect(before.rect.intersected(after.rect))
+                          .adjusted(2, 2, -2, -2)
+                          .toAlignedRect());
+    if (after.dimmed) {
+      for (const Annotation &annotation : annotations_) {
+        if (annotation.kind == Annotation::Kind::Spotlight)
+          damage |= QRegion(widgetRect(annotationPaintedBounds(annotation))
+                                .adjusted(-2, -2, 2, 2)
+                                .toAlignedRect());
+      }
+    }
+  } else if (!before.dimmed && !after.dimmed) {
+    // A gradient or picture is laid out afresh against the new canvas; only
+    // what lies inside the image's corners is sure to be unchanged.
+    damage -= QRegion(
+        sourceFrame.adjusted(corner, corner, -corner, -corner).toAlignedRect());
+  }
+  // Gaining or losing the mat also swaps what the image card sits on: its
+  // frame and rounded corners at rest, its shadow, a windowed editor's halo.
+  // None of them reaches further than the export frame around the source.
+  if (exceedsSourceFrame(before.rect) != exceedsSourceFrame(after.rect)) {
+    const qreal frame = kBackdropMargin * std::max<qreal>(scale, 1.0) + 2.0;
+    damage |=
+        QRegion(sourceFrame.adjusted(-frame, -frame, frame, frame + 20.0)
+                    .toAlignedRect()) -
+        QRegion(sourceFrame.adjusted(corner, corner, -corner, -corner)
+                    .toAlignedRect());
+  }
+  return damage & QRegion(rect());
+}
+
+QRegion CaptureEditor::pointerMotionRegion(const QPointF &point,
+                                           LiveCanvas *canvas) const {
   QRegion damage;
   const QRect widgetBounds = rect();
   const auto add = [&](const QRectF &area) {
@@ -4658,66 +4885,122 @@ QRegion CaptureEditor::pointerMotionRegion(const QPointF &point) const {
   const auto widgetPoint = [&](const QPointF &annotationPoint) {
     return sourceFrame.topLeft() + annotationPoint * scale;
   };
-  const auto annotationRegion = [&](const Annotation &annotation) {
-    QRegion region;
-    if (annotation.kind == Annotation::Kind::Arrow) {
-      const QRectF bounds = arrowVisualBounds(annotation, scale);
-      return QRegion(QRectF(widgetPoint(bounds.topLeft()), bounds.size() * scale)
-                         .adjusted(-4, -4, 4, 4).toAlignedRect()) &
-             QRegion(widgetBounds);
-    }
-    const bool stroke = annotation.kind == Annotation::Kind::Arrow ||
-                        annotation.kind == Annotation::Kind::Line ||
-                        annotation.kind == Annotation::Kind::Freehand ||
-                        annotation.kind == Annotation::Kind::Highlighter;
-    if (stroke) {
-      QPainterPath path;
-      if (!annotation.points.isEmpty()) {
-        path.moveTo(widgetPoint(annotation.points.constFirst()));
-        for (qsizetype index = 1; index < annotation.points.size(); ++index)
-          path.lineTo(widgetPoint(annotation.points.at(index)));
-      } else {
-        path.moveTo(widgetPoint(annotation.start));
-        path.lineTo(widgetPoint(annotation.end));
+  const auto widgetRect = [&](const QRectF &annotationRect) {
+    return QRectF(widgetPoint(annotationRect.topLeft()),
+                  annotationRect.size() * scale);
+  };
+  // Boxes short runs of an outline, each with its neighbours: a smoothed
+  // stroke stays inside the hull of three consecutive points, and a long
+  // diagonal no longer damages its whole bounding rectangle. Boxes cannot
+  // leave the holes a filled polygon does where a stroke crosses itself.
+  const auto addOutline = [&](const QVector<QPointF> &points, qreal pad) {
+    constexpr qreal kRunLength = 64.0;
+    qreal left = 0.0, top = 0.0, right = 0.0, bottom = 0.0, travelled = 0.0;
+    bool open = false;
+    const auto include = [&](qsizetype index) {
+      const QPointF at = widgetPoint(points.at(index));
+      if (!open) {
+        left = right = at.x();
+        top = bottom = at.y();
+        open = true;
+        return;
       }
-      QPainterPathStroker stroker;
-      const qreal width = std::max<qreal>(12.0,
-          annotation.size * scale *
-              (annotation.kind == Annotation::Kind::Highlighter ? 4.0 : 2.5));
-      stroker.setWidth(width);
-      region = QRegion(stroker.createStroke(path).toFillPolygon().toPolygon());
-      if (annotation.kind == Annotation::Kind::Arrow)
-        region |= QRegion(QRectF(widgetPoint(annotation.end) - QPointF(width, width),
-                                 QSizeF(width * 2, width * 2)).toAlignedRect());
-      return region & QRegion(widgetBounds);
+      left = std::min(left, at.x());
+      right = std::max(right, at.x());
+      top = std::min(top, at.y());
+      bottom = std::max(bottom, at.y());
+    };
+    for (qsizetype index = 0; index < points.size(); ++index) {
+      if (!open && index > 0)
+        include(index - 1);
+      include(index);
+      if (index + 1 < points.size()) {
+        include(index + 1);
+        travelled +=
+            QLineF(points.at(index), points.at(index + 1)).length() * scale;
+      }
+      if (travelled >= kRunLength || index + 1 == points.size()) {
+        add(QRectF(QPointF(left, top), QPointF(right, bottom))
+                .adjusted(-pad, -pad, pad, pad));
+        open = false;
+        travelled = 0.0;
+      }
     }
-
-    const QRectF bounds = annotationBounds(annotation);
-    const QRectF shown(widgetPoint(bounds.topLeft()), bounds.size() * scale);
-    const bool outlineOnly =
-        (annotation.kind == Annotation::Kind::Rectangle ||
-         annotation.kind == Annotation::Kind::Ellipse) &&
-        !annotation.filled;
-    if (outlineOnly) {
-      const qreal width = std::max<qreal>(5.0, annotation.size * scale + 4.0);
-      const QRegion outer(shown.adjusted(-width, -width, width, width)
-                              .toAlignedRect());
-      const QRegion inner(shown.adjusted(width, width, -width, -width)
-                              .toAlignedRect());
-      return outer.subtracted(inner) & QRegion(widgetBounds);
+  };
+  // Everything a layer repaints: its ink and, while it is selected, the dashed
+  // bounds and handles around it. Ink extents are the ones that grow the
+  // canvas, so a new pen cannot paint outside what gets damaged.
+  const auto addLayer = [&](const Annotation &annotation, bool selected) {
+    const qreal pen = annotationPenWidth(annotation) / 2.0 * scale + 1.0;
+    const QRectF body = QRectF(annotation.start, annotation.end).normalized();
+    const bool hollow = (annotation.kind == Annotation::Kind::Rectangle ||
+                         annotation.kind == Annotation::Kind::Ellipse) &&
+                        !annotation.filled;
+    if (annotation.kind == Annotation::Kind::Arrow) {
+      // The head is sized for the display, so ask for it at this scale.
+      add(widgetRect(arrowVisualBounds(annotation, scale)));
+    } else if (annotation.kind == Annotation::Kind::Line) {
+      const int pieces = std::max(
+          1, qCeil(QLineF(annotation.start, annotation.end).length() * scale /
+                   48.0));
+      QVector<QPointF> points;
+      points.reserve(pieces + 1);
+      for (int piece = 0; piece <= pieces; ++piece)
+        points.push_back(annotation.start +
+                         (annotation.end - annotation.start) *
+                             (static_cast<qreal>(piece) / pieces));
+      addOutline(points, pen);
+    } else if (isStrokeKind(annotation.kind)) {
+      addOutline(annotation.points, pen);
+    } else if (hollow && annotation.kind == Annotation::Kind::Ellipse) {
+      // An ellipse leaves its bounding rectangle everywhere but four points,
+      // so follow the curve itself rather than the rectangle's edges. A
+      // multiple of four samples lands one on each of those extremes.
+      const int pieces =
+          4 * std::clamp(qCeil((body.width() + body.height()) * scale / 96.0),
+                         4, 64);
+      QVector<QPointF> points;
+      points.reserve(pieces + 1);
+      for (int piece = 0; piece <= pieces; ++piece) {
+        const qreal angle = 2.0 * std::numbers::pi_v<qreal> * piece / pieces;
+        points.push_back(body.center() +
+                         QPointF(std::cos(angle) * body.width() / 2.0,
+                                 std::sin(angle) * body.height() / 2.0));
+      }
+      addOutline(points, pen + 1.0);
+    } else if (hollow) {
+      // Rounded corners cut inside the rectangle by up to 0.3 radii. The
+      // half pixel keeps a box dragged flat from reading as no frame at all.
+      addFrame(widgetRect(body).adjusted(-0.5, -0.5, 0.5, 0.5),
+               pen + 0.3 * annotation.cornerRadius * scale + 2.5);
+    } else if (annotation.kind == Annotation::Kind::Redaction) {
+      add(widgetRect(body.adjusted(-1, -1, 1, 1)));
+    } else {
+      // Glyphs overhang their metrics box, and an outline halo adds to that.
+      const qreal overhang =
+          annotation.kind == Annotation::Kind::Text
+              ? annotationTextFont(annotation.size, annotation.textFont)
+                        .pixelSize() *
+                    0.2 * scale
+              : 0.0;
+      add(widgetRect(annotationPaintedBounds(annotation))
+              .adjusted(-overhang, -overhang, overhang, overhang));
     }
-    return QRegion(shown.adjusted(-16, -16, 16, 16).toAlignedRect()) &
-           QRegion(widgetBounds);
+    if (!selected)
+      return;
+    const qreal reach = 4.0 * scale; // how far out the dashed bounds sit
+    addFrame(widgetRect(annotationBounds(annotation))
+                 .adjusted(-reach, -reach, reach, reach),
+             8.0 + 0.3 * selectionBoundsRadius(annotation, 4.0) * scale);
+    for (const auto &[position, handle] : annotationHandles(annotation))
+      add(QRectF(widgetPoint(position) - QPointF(7, 7), QSizeF(14, 14)));
   };
 
-  if (tool_ == Tool::Marker && !dragging_ && canStartAnnotationAt(point) &&
-      !pointerGrabsLayer()) {
-    Annotation marker;
-    marker.kind = Annotation::Kind::Marker;
-    marker.start = markerPlacementPoint(point);
-    marker.size = annotationSize_;
-    damage |= annotationRegion(marker);
-  }
+  const LiveLayers live = liveLayers(point);
+  if (canvas)
+    *canvas = liveCanvas(live);
+  if (live.preview >= 0)
+    addLayer(live.annotations.at(live.preview), false);
   if (tool_ == Tool::Highlighter && highlighterPreview_) {
     const qreal height =
         highlighterPreviewHeight(highlighterPreview_->annotationSize);
@@ -4744,7 +5027,7 @@ QRegion CaptureEditor::pointerMotionRegion(const QPointF &point) const {
       !selectedAnnotations_.isEmpty()) {
     for (const int index : selectedAnnotations_) {
       if (index >= 0 && index < annotations_.size())
-        damage |= annotationRegion(annotations_.at(index));
+        addLayer(annotations_.at(index), true);
     }
     return damage;
   }
@@ -4757,32 +5040,11 @@ QRegion CaptureEditor::pointerMotionRegion(const QPointF &point) const {
     add(QRectF(widgetPoint(band.topLeft()), band.size() * scale));
     return damage;
   }
-  if (interaction_ != Interaction::None || tool_ == Tool::Select ||
-      tool_ == Tool::Cut)
-    return damage;
-
-  Annotation preview;
-  if (tool_ == Tool::Freehand || tool_ == Tool::Highlighter) {
-    preview.kind = tool_ == Tool::Highlighter ? Annotation::Kind::Highlighter
-                                              : Annotation::Kind::Freehand;
-    preview.points = freehandPoints_;
-  } else if (tool_ == Tool::Text) {
-    preview.kind = Annotation::Kind::Rectangle;
-    preview.start = dragStart_;
-    preview.end = toUnclampedAnnotationPoint(point);
-  } else {
-    preview.kind = dragShapeKind(tool_);
-    preview.arrowStyle = arrowStyle_;
-    const QLineF span = creationSpan(toUnclampedAnnotationPoint(point));
-    preview.start = span.p1();
-    preview.end = span.p2();
-    preview.filled = (tool_ == Tool::Rectangle || tool_ == Tool::Ellipse) &&
-                     fillShapes_;
-  }
-  preview.size = tool_ == Tool::Highlighter && highlighterLock_
-                     ? highlighterLock_->annotationSize
-                     : annotationSize_;
-  damage |= annotationRegion(preview);
+  // A redaction in progress rewrites source pixels rather than adding a
+  // layer, so it never appears among the live layers above.
+  if (interaction_ == Interaction::None && tool_ == Tool::Redact)
+    add(widgetRect(
+        QRectF(dragStart_, toUnclampedAnnotationPoint(point)).normalized()));
   return damage;
 }
 
@@ -4826,7 +5088,8 @@ void CaptureEditor::mouseMoveEvent(QMouseEvent *event) {
     panAnchor_ = event->position();
     return;
   }
-  const QRegion oldPointerVisual = pointerMotionRegion(cursor_);
+  LiveCanvas oldCanvas;
+  const QRegion oldPointerVisual = pointerMotionRegion(cursor_, &oldCanvas);
   const QRectF oldSelection = selection_;
   const int oldHoveredWindow = hoveredWindow_;
   cursor_ = event->position();
@@ -5159,7 +5422,10 @@ void CaptureEditor::mouseMoveEvent(QMouseEvent *event) {
     }
   }
   updatePointerCursor();
-  QRegion damage = oldPointerVisual | pointerMotionRegion(cursor_);
+  LiveCanvas canvas;
+  QRegion damage = oldPointerVisual | pointerMotionRegion(cursor_, &canvas);
+  if (phase_ == Phase::Edit)
+    damage |= liveCanvasDamage(oldCanvas, canvas);
   if (phase_ == Phase::Select && dragging_ && oldSelection != selection_) {
     const QRegion oldHole(oldSelection.normalized().toAlignedRect());
     const QRegion newHole(selection_.normalized().toAlignedRect());
@@ -6866,10 +7132,28 @@ void CaptureEditor::paintEdit(QPainter &painter) {
   const bool grown = canvasGrown();
   const BackgroundStyle background = effectiveBackgroundStyle();
   const bool hasBackground = hasCaptureBackground();
-  const bool framedBackground =
-      hasBackground && canvasBoundaryMode_ == CanvasBoundaryMode::Framed;
   const qreal imageScale = editScale();
-  if (imageShadow_ && opaqueBackdrop && !hasBackground && !visibleSourceImage.isEmpty()) {
+  // The mat follows the canvas a carried layer previews, in both directions:
+  // it grows ahead of a layer leaving the image and gives way behind one
+  // coming back, so what is on screen is what release will settle to. With
+  // nothing carried this is the settled canvas, painted as it always was.
+  const LiveLayers live = liveLayers(cursor_);
+  const LiveCanvas canvas = liveCanvas(live);
+  const QRectF previewClip = canvas.previews ? canvas.rect : canvasRect_;
+  const qreal previewScale = std::max<qreal>(editScale(), 0.001);
+  const QRectF matRect =
+      canvas.previews
+          ? QRectF(sourceImage.topLeft() + previewClip.topLeft() * previewScale,
+                   previewClip.size() * previewScale)
+          : image;
+  const bool matGrown = canvas.previews ? exceedsSourceFrame(previewClip)
+                                        : grown;
+  const BackgroundStyle matStyle = canvas.previews ? canvas.backdrop
+                                                   : background;
+  const bool hasMat =
+      matStyle != BackgroundStyle::None && matStyle != BackgroundStyle::Off &&
+      (matStyle != BackgroundStyle::Custom || !customBackdrop_.isNull());
+  if (imageShadow_ && opaqueBackdrop && !hasMat && !visibleSourceImage.isEmpty()) {
     // Two shadows, the macOS model: a tight even ambient halo that sits
     // the source card on the mat, and a wider key shadow offset downward.
     // The expanded canvas is not itself a card and never gets a shadow.
@@ -6900,22 +7184,29 @@ void CaptureEditor::paintEdit(QPainter &painter) {
     painter.save();
     painter.setClipRect(editViewportRect());
   }
-  if (grown || framedBackground) {
+  if (matGrown || (hasMat && canvasBoundaryMode_ == CanvasBoundaryMode::Framed)) {
     // Paint the same frame as export at the current view scale. Expanded
     // canvases already contain the mat; only the source card gets a shadow.
-    const qreal margin = grown ? 0.0 : kBackdropMargin * imageScale;
-    const QRectF backing = image.adjusted(-margin, -margin, margin, margin);
+    // A preview back inside the image is framed around the source, wherever
+    // the settled canvas it is leaving still reaches.
+    const qreal margin = matGrown ? 0.0 : kBackdropMargin * imageScale;
+    const QRectF card = matGrown ? matRect
+                        : canvas.previews ? sourceImage
+                                          : image;
+    const QRectF backing = card.adjusted(-margin, -margin, margin, margin);
     painter.save();
     painter.setClipRect(backing, Qt::IntersectClip);
-    paintCaptureBackground(painter, backing, background, customBackdrop_);
-    if (imageShadow_ && hasBackground)
+    paintCaptureBackground(painter, backing, matStyle, customBackdrop_);
+    if (imageShadow_ && hasMat)
       paintCaptureImageShadow(painter, sourceImage, imageScale, imageScale);
     painter.restore();
   }
 
   QPainterPath clip;
   const qreal sourceRadius =
-      !grown && framedBackground ? kCaptureImageRadius * imageScale : 0.0;
+      !matGrown && hasMat && canvasBoundaryMode_ == CanvasBoundaryMode::Framed
+          ? kCaptureImageRadius * imageScale
+          : 0.0;
   clip.addRoundedRect(sourceImage, sourceRadius, sourceRadius);
   const QSize targetSize(qRound(sourceImage.width() * devicePixelRatioF()),
                          qRound(sourceImage.height() * devicePixelRatioF()));
@@ -6970,124 +7261,26 @@ void CaptureEditor::paintEdit(QPainter &painter) {
 
   QImage defaultLayerSource = redactionLayer;
   QRectF defaultLayerBounds(QPointF(), selection_.size());
-  const bool markerPreview = tool_ == Tool::Marker && !dragging_ &&
-                             canStartAnnotationAt(cursor_) &&
-                             !pointerGrabsLayer();
-  const bool markerPreviewOutsideCanvas =
-      markerPreview && !image.contains(cursor_);
-  const bool liveOutsidePreview = dragging_ || markerPreviewOutsideCanvas;
+  QRectF defaultLayerSourceRect; // null: the source image is the whole canvas
+  QPoint defaultLayerSourceOrigin;
+  const bool liveOutsidePreview = live.carried;
+  const QVector<Annotation> &defaultAnnotations = live.annotations;
 
   painter.save();
   painter.translate(sourceImage.topLeft());
   painter.scale(editScale(), editScale());
   painter.save();
-  // While a layer is being carried, let it remain visible over the surround;
-  // the background settles to its final integer bounds once on release.
-  if (!liveOutsidePreview)
-    painter.setClipRect(canvasRect_, Qt::IntersectClip);
-  QVector<Annotation> defaultAnnotations;
-  defaultAnnotations.reserve(annotations_.size() + 1);
-  for (int index = 0; index < annotations_.size(); ++index) {
-    if (index == editingAnnotation_)
-      continue;
-    if (annotationLayer(annotations_.at(index).kind) ==
-        AnnotationLayer::Default)
-      defaultAnnotations.push_back(annotations_.at(index));
-  }
-  if (dragging_ && interaction_ == Interaction::None &&
-      tool_ != Tool::Select && tool_ != Tool::Redact &&
-      tool_ != Tool::Cut) {
-    Annotation preview;
-    if (tool_ == Tool::Freehand || tool_ == Tool::Highlighter) {
-      preview.kind = tool_ == Tool::Highlighter ? Annotation::Kind::Highlighter
-                                                : Annotation::Kind::Freehand;
-      preview.points = freehandPoints_;
-    } else {
-      if (tool_ == Tool::Spotlight) {
-        preview.kind = Annotation::Kind::Spotlight;
-        preview.magnification = spotlightMagnification_;
-        preview.spotlightShape = spotlightShape_;
-      } else if (tool_ == Tool::Text) {
-        // The box being dragged: its height is how many lines it will hold.
-        preview.kind = Annotation::Kind::Rectangle;
-        preview.cornerRadius = 2.0;
-      } else {
-        preview.kind = dragShapeKind(tool_);
-        if (tool_ == Tool::Arrow)
-          preview.arrowStyle = arrowStyle_;
-        if (tool_ == Tool::Rectangle || tool_ == Tool::Ellipse)
-          preview.filled = fillShapes_;
-        if (tool_ == Tool::Rectangle)
-          preview.cornerRadius = cornerRadius_;
-      }
-      const QLineF span =
-          creationSpan(toUnclampedAnnotationPoint(cursor_));
-      preview.start = span.p1();
-      preview.end = span.p2();
-    }
-    preview.color = tool_ == Tool::Ocr ? chromeTheme().accent : annotationColor();
-    if (tool_ == Tool::Text)
-      preview.color.setAlpha(150);
-    preview.size = tool_ == Tool::Ocr         ? 2.0
-                   : tool_ == Tool::Text      ? 1.0
-                   : tool_ == Tool::Spotlight ? spotlightBorder_
-                   : tool_ == Tool::Highlighter && highlighterLock_
-                       ? highlighterLock_->annotationSize
-                       : annotationSize_;
-    defaultAnnotations.push_back(std::move(preview));
-  } else if (markerPreview) {
-    // The ghost counter shows where the next one would land, so it belongs
-    // only where the press would actually place one: over another counter the
-    // press moves that counter instead.
-    Annotation preview;
-    preview.kind = Annotation::Kind::Marker;
-    preview.start = markerPlacementPoint(cursor_);
-    preview.number = nextMarker_;
-    preview.color = annotationColor();
-    preview.color.setAlpha(185);
-    preview.size = annotationSize_;
-    defaultAnnotations.push_back(std::move(preview));
-  }
-  QRectF previewClip = canvasRect_;
-  if (liveOutsidePreview && canvasBoundaryMode_ != CanvasBoundaryMode::Framed) {
-    previewClip = captureCanvasRect(selection_.size(), defaultAnnotations,
-                                    canvasBoundaryMode_);
-  }
-  if (previewClip != canvasRect_) {
-    QPainterPath overscan;
-    overscan.addRect(previewClip);
-    QPainterPath settledCanvas;
-    settledCanvas.addRect(canvasRect_);
-    overscan = overscan.subtracted(settledCanvas);
-    const bool previewGrown =
-        previewClip != QRectF(QPointF(), selection_.size());
-    const bool automaticPreviewBackground =
-        canvasBoundaryMode_ == CanvasBoundaryMode::Framed && previewGrown &&
-        backgroundStyle_ == BackgroundStyle::None;
-    const BackgroundStyle previewBackground =
-        automaticPreviewBackground ? BackgroundStyle::Slate : background;
-    painter.save();
-    painter.setClipPath(overscan, Qt::IntersectClip);
-    paintCaptureBackground(painter, previewClip, previewBackground);
-    painter.restore();
-  }
-  // Framed mode shows the complete layer while it is being carried and
-  // settles the background on release. Overflow and Image preview their final
-  // canvas bounds live.
+  // Clip to the same live canvas as the mat, including a text draft's growth.
+  // Framed leaves carried layers unclipped so its counter ghost can float
+  // over the surround.
   if (!liveOutsidePreview || canvasBoundaryMode_ != CanvasBoundaryMode::Framed)
     painter.setClipRect(previewClip, Qt::IntersectClip);
-  const bool hasSpotlight = std::any_of(
-      defaultAnnotations.cbegin(), defaultAnnotations.cend(),
-      [](const Annotation &item) {
-        return item.kind == Annotation::Kind::Spotlight;
-      });
+  const bool hasSpotlight = showsSpotlight(defaultAnnotations);
   if (hasSpotlight && !redactionLayer.isNull()) {
     // Spotlights sample the complete composed canvas. Build that source only
     // when one is present; a dragged preview may temporarily make it larger
     // than the settled canvas, so its opening stays live beyond the old edge.
-    const QRectF spotlightCanvas =
-        captureCanvasRect(selection_.size(), defaultAnnotations,
-                          canvasBoundaryMode_);
+    const QRectF spotlightCanvas = canvas.rect;
     const bool spotlightGrown = spotlightCanvas !=
                                 QRectF(QPointF(), selection_.size());
     if (grown || spotlightGrown) {
@@ -7095,17 +7288,27 @@ void CaptureEditor::paintEdit(QPainter &painter) {
       const QSize canvasPixels(
           std::max(1, qCeil(spotlightCanvas.width() * pixelScale)),
           std::max(1, qCeil(spotlightCanvas.height() * pixelScale)));
+      // Compose only the patch the lenses magnify, a fraction of their own
+      // area: a whole 6K canvas on every paint, pointer hover included, costs
+      // tens of milliseconds. Everything below still draws in whole-canvas
+      // pixels; the painter is merely moved so that patch lands at its origin.
+      defaultLayerSourceRect = QRectF(QPointF(), QSizeF(canvasPixels));
+      const QRect patch =
+          spotlightSampleBounds(defaultAnnotations, spotlightCanvas,
+                                defaultLayerSourceRect)
+              .toAlignedRect()
+              .adjusted(-2, -2, 2, 2)
+              .intersected(QRect(QPoint(), canvasPixels));
+      defaultLayerSourceOrigin = patch.topLeft();
       defaultLayerSource =
-          QImage(canvasPixels, QImage::Format_ARGB32_Premultiplied);
+          QImage(patch.isEmpty() ? QSize(1, 1) : patch.size(),
+                 QImage::Format_ARGB32_Premultiplied);
       defaultLayerSource.fill(Qt::transparent);
       QPainter basePainter(&defaultLayerSource);
+      basePainter.translate(-defaultLayerSourceOrigin);
       basePainter.setRenderHints(QPainter::SmoothPixmapTransform);
-      const bool automaticSpotlightBackground =
-          canvasBoundaryMode_ == CanvasBoundaryMode::Framed &&
-          spotlightGrown && backgroundStyle_ == BackgroundStyle::None;
-      const BackgroundStyle spotlightBackground =
-          automaticSpotlightBackground ? BackgroundStyle::Slate : background;
-      paintCaptureBackground(basePainter, defaultLayerSource.rect(),
+      const BackgroundStyle spotlightBackground = canvas.backdrop;
+      paintCaptureBackground(basePainter, defaultLayerSourceRect,
                              spotlightBackground);
       const QRectF sourcePixels(-spotlightCanvas.left() * pixelScale,
                                 -spotlightCanvas.top() * pixelScale,
@@ -7127,7 +7330,8 @@ void CaptureEditor::paintEdit(QPainter &painter) {
   // so a spotlight carried past the old frame has valid pixels to sample.
   if (!defaultLayerSource.isNull()) {
     paintDefaultLayer(painter, defaultLayerSource, defaultLayerBounds,
-                      defaultAnnotations, editScale());
+                      defaultAnnotations, editScale(), defaultLayerSourceRect,
+                      defaultLayerSourceOrigin);
   } else {
     for (const Annotation &annotation : defaultAnnotations)
       paintAnnotation(painter, annotation, editScale());
@@ -7315,15 +7519,7 @@ void CaptureEditor::paintEdit(QPainter &painter) {
       // The widget keeps typing slack (a 48px floor plus room for the next
       // glyph), so its geometry cannot shape the pill. Rebuild the committed
       // pill's rect from the draft text instead, so nothing shifts on commit.
-      Annotation draft;
-      draft.kind = Annotation::Kind::Text;
-      draft.size = textSize_;
-      draft.textFont = textEditFont_;
-      draft.text = textEditor_->toPlainText();
-      draft.textWidth = textEditWrapWidth_;
-      const QFontMetricsF metrics(annotationTextFont(textSize_, textEditFont_));
-      draft.start = textPoint_ + QPointF(0, metrics.ascent());
-      const QRectF pill = annotationTextBounds(draft, canvasRect_.right());
+      const QRectF pill = annotationTextBounds(draftTextAnnotation());
       painter.save();
       painter.translate(sourceFrameWidgetRect().topLeft());
       painter.scale(editScale(), editScale());

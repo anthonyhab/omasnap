@@ -31,6 +31,7 @@
 #include "icons.hpp"
 
 #include <QApplication>
+#include <QBackingStore>
 #include <QTextBlock>
 #include <QTextLayout>
 #include <QBuffer>
@@ -1545,6 +1546,668 @@ bool runPointerDamageRegionCheck(QString &error) {
         "Smart window/fullscreen transition did not repaint the monitor");
     return false;
   }
+  return true;
+}
+
+/** Pointer damage must cover every pixel a carried layer changes. grab()
+ *  repaints the whole widget, so it cannot see a pixel a partial repaint
+ *  missed; this compares it against what the backing store really holds. */
+bool runPointerDamageRepaintSmoke(QApplication &application, QString &error) {
+  CaptureData capture;
+  capture.monitor.name = QStringLiteral("TEST");
+  capture.monitor.geometry = {0, 0, 1000, 700};
+  capture.monitor.pixelSize = {1000, 700};
+  capture.monitor.scale = 1.0;
+  capture.source = QImage(600, 400, QImage::Format_ARGB32_Premultiplied);
+  capture.source.fill(QColor(QStringLiteral("#d8dde6")));
+  capture.previewSize = capture.source.size();
+
+  const auto layer = [](Annotation::Kind kind, QPointF start, QPointF end,
+                        quint64 id) {
+    Annotation annotation;
+    annotation.kind = kind;
+    annotation.start = start;
+    annotation.end = end;
+    annotation.color = QColor(QStringLiteral("#ff375f"));
+    annotation.size = 4.0;
+    annotation.id = id;
+    return annotation;
+  };
+  Annotation wave =
+      layer(Annotation::Kind::Highlighter, {120, 200}, {340, 200}, 1);
+  for (int index = 0; index <= 22; ++index) {
+    const qreal along = index / 22.0;
+    wave.points.push_back(QPointF(120 + 220 * along,
+                                  200 + 30 * std::sin(along * 6.283)));
+  }
+  wave.rawPoints = wave.points;
+  const Annotation arrow =
+      layer(Annotation::Kind::Arrow, {360, 150}, {520, 230}, 2);
+
+  struct Case {
+    QString name;
+    BackgroundStyle background;
+    CanvasBoundaryMode boundary;
+    QVector<Annotation> annotations;
+    QPointF grab;
+    QPointF travel;
+    Qt::Key tool = Qt::Key_V; // Select carries a layer; a tool draws one
+  };
+  const QVector<Case> cases{
+      // An ellipse leaves its bounding rectangle everywhere but four points.
+      {QStringLiteral("hollow ellipse"), BackgroundStyle::None,
+       CanvasBoundaryMode::Framed,
+       {layer(Annotation::Kind::Ellipse, {120, 100}, {330, 260}, 1)},
+       {120, 180},
+       {150, 90}},
+      // A stroke's dashed bounds and handles sit well away from its ink.
+      {QStringLiteral("selected stroke"), BackgroundStyle::None,
+       CanvasBoundaryMode::Framed, {wave}, {120, 200}, {150, 90}},
+      // Overflow lays its backdrop out against the canvas being previewed.
+      {QStringLiteral("overflow backdrop"), BackgroundStyle::Aurora,
+       CanvasBoundaryMode::Overflow, {arrow}, {440, 190}, {260, 20}},
+      // A spotlight dims the canvas its layers would settle to.
+      {QStringLiteral("spotlight"), BackgroundStyle::None,
+       CanvasBoundaryMode::Framed,
+       {layer(Annotation::Kind::Spotlight, {80, 220}, {260, 360}, 1), arrow},
+       {440, 190},
+       {260, 20}},
+      // A canvas that has already grown gives its mat back as the layer
+      // that grew it is carried home.
+      {QStringLiteral("framed shrink"), BackgroundStyle::None,
+       CanvasBoundaryMode::Framed,
+       {layer(Annotation::Kind::Arrow, {560, 150}, {700, 230}, 1)},
+       {630, 190},
+       {-260, 20}},
+      // The first pixel of a lens being dragged out dims the whole canvas,
+      // and it arrives on a pointer move rather than on the press.
+      {QStringLiteral("spotlight drawn"), BackgroundStyle::None,
+       CanvasBoundaryMode::Framed, {}, {150, 120}, {240, 160}, Qt::Key_S},
+  };
+
+  // -1 when this platform's backing store cannot be read back.
+  const auto stalePixels = [](QWidget &widget) -> qint64 {
+    QPaintDevice *device = widget.backingStore()->paintDevice();
+    if (!device || device->devType() != QInternal::Image)
+      return -1;
+    const QImage shown = static_cast<QImage *>(device)->convertToFormat(
+        QImage::Format_ARGB32_Premultiplied);
+    const QImage fresh = widget.grab().toImage().convertToFormat(
+        QImage::Format_ARGB32_Premultiplied);
+    if (shown.size() != fresh.size())
+      return -1;
+    qint64 stale = 0;
+    for (int y = 0; y < shown.height(); ++y) {
+      const auto *was = reinterpret_cast<const QRgb *>(shown.constScanLine(y));
+      const auto *want = reinterpret_cast<const QRgb *>(fresh.constScanLine(y));
+      for (int x = 0; x < shown.width(); ++x) {
+        // Resampling may differ by a level or two between a span that starts
+        // at the image edge and one that starts at a damage rectangle.
+        constexpr int slop = 16;
+        if (std::abs(qRed(was[x]) - qRed(want[x])) > slop ||
+            std::abs(qGreen(was[x]) - qGreen(want[x])) > slop ||
+            std::abs(qBlue(was[x]) - qBlue(want[x])) > slop ||
+            std::abs(qAlpha(was[x]) - qAlpha(want[x])) > slop)
+          ++stale;
+      }
+    }
+    return stale;
+  };
+
+  for (const Case &test : cases) {
+    Operation background;
+    background.type = Operation::Type::Background;
+    background.background = test.background;
+    Operation boundary;
+    boundary.type = Operation::Type::CanvasBoundary;
+    boundary.canvasBoundary = test.boundary;
+    Operation annotate;
+    annotate.type = Operation::Type::Annotate;
+    annotate.annotations = test.annotations;
+    OperationLog log;
+    log.ops = {background, boundary, annotate};
+    log.index = 3;
+    log.nextId = test.annotations.size() + 1;
+    log.previewSize = capture.previewSize;
+
+    CaptureEditor editor(capture, CaptureEditor::CaptureMode::File,
+                         QuickOutputMode::None, log);
+    editor.resize(1000, 700);
+    editor.show();
+    if (!QTest::qWaitForWindowExposed(&editor)) {
+      error = QStringLiteral("Damage smoke window was never exposed");
+      return false;
+    }
+    QTest::keyClick(&editor, test.tool);
+    QTest::qWait(40);
+    const qint64 atRest = stalePixels(editor);
+    if (atRest < 0) {
+      editor.close();
+      return true; // nothing to read back here; the offscreen run covers it
+    }
+    if (atRest != 0) {
+      error = QStringLiteral("%1: %2 backing-store pixels were stale at rest")
+                  .arg(test.name)
+                  .arg(atRest);
+      return false;
+    }
+
+    const QPointF from = editor.annotationPointToWidgetForTest(test.grab);
+    QTest::mouseMove(&editor, from.toPoint());
+    QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, from.toPoint());
+    // Let the press's own full repaint land first, as a real pointer would:
+    // the moves after it are the ones that repaint only their damage.
+    QTest::qWait(40);
+    constexpr int steps = 8;
+    for (int step = 1; step <= steps; ++step) {
+      QTest::mouseMove(&editor,
+                       (from + test.travel * (step / qreal(steps))).toPoint());
+      QTest::qWait(30); // one coalesced pointer repaint
+      application.processEvents();
+      // Checked while the layer is still carried: release repaints everything.
+      // A repaint that is merely late on a busy machine lands within a pause;
+      // a pixel the damage missed stays missed.
+      qint64 stale = stalePixels(editor);
+      if (stale != 0) {
+        QTest::qWait(80);
+        stale = stalePixels(editor);
+      }
+      if (stale != 0) {
+        error = QStringLiteral("%1: carrying the layer left %2 pixels a full "
+                               "repaint would have changed (step %3)")
+                    .arg(test.name)
+                    .arg(stale)
+                    .arg(step);
+        return false;
+      }
+    }
+    QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,
+                        (from + test.travel).toPoint());
+    editor.close();
+  }
+  return true;
+}
+
+/** Framed growth shows its window-gray mat while the layer is still being
+ *  carried, not only once it is released. */
+bool runFramedLiveGrowthSmoke(QApplication &application, QString &error) {
+  CaptureData capture;
+  capture.monitor.name = QStringLiteral("TEST");
+  capture.monitor.geometry = {0, 0, 1000, 700};
+  capture.monitor.pixelSize = {1000, 700};
+  capture.monitor.scale = 1.0;
+  capture.source = QImage(600, 400, QImage::Format_ARGB32_Premultiplied);
+  capture.source.fill(QColor(QStringLiteral("#d8dde6")));
+  capture.previewSize = capture.source.size();
+
+  Annotation arrow;
+  arrow.kind = Annotation::Kind::Arrow;
+  arrow.start = {360, 250};
+  arrow.end = {520, 330};
+  arrow.color = QColor(QStringLiteral("#ff375f"));
+  arrow.id = 1;
+  Operation annotate;
+  annotate.type = Operation::Type::Annotate;
+  annotate.annotations = {arrow};
+  OperationLog log;
+  log.ops = {annotate};
+  log.index = 1;
+  log.nextId = 2;
+  log.previewSize = capture.previewSize;
+
+  CaptureEditor editor(capture, CaptureEditor::CaptureMode::File,
+                       QuickOutputMode::None, log);
+  editor.resize(1000, 700);
+  editor.show();
+  application.processEvents();
+  QTest::keyClick(&editor, Qt::Key_V);
+
+  // Just past the image's right edge and well above the arrow: surround at
+  // rest, mat once the arrow's canvas frames the image.
+  const QRectF frame = editor.sourceFrameWidgetRectForTest();
+  const QPoint probe(qRound(frame.right()) + 30, qRound(frame.top()) + 20);
+  const auto matAt = [&editor](const QPoint &point) {
+    const QColor color = editor.grab().toImage().pixelColor(point);
+    return color.alpha() == 255 && colorNear(color, QColor(0x24, 0x24, 0x24));
+  };
+  if (matAt(probe)) {
+    error = QStringLiteral("Framed canvas showed a mat before anything grew it");
+    return false;
+  }
+  const QPoint from = editor.annotationPointToWidgetForTest({440, 290}).toPoint();
+  QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, from);
+  QTest::mouseMove(&editor, from + QPoint(60, 0));
+  if (matAt(probe)) {
+    error = QStringLiteral("Framed canvas grew for a layer still inside it");
+    return false;
+  }
+  QTest::mouseMove(&editor, from + QPoint(200, 0));
+  if (!matAt(probe)) {
+    error = QStringLiteral(
+        "Framed canvas did not grow its mat while the layer was carried");
+    return false;
+  }
+  // Carried back inside, the preview goes with it.
+  QTest::mouseMove(&editor, from + QPoint(60, 0));
+  if (matAt(probe)) {
+    error = QStringLiteral("Framed preview mat outlived the layer leaving it");
+    return false;
+  }
+  QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,
+                      from + QPoint(60, 0));
+
+  // The same holds once the canvas has settled grown: carrying the layer that
+  // grew it back inside gives the mat up at once, not only on release. Each
+  // release re-fits the view, so geometry is read again after it.
+  const auto arrowGrip = [&editor] {
+    const Annotation &carried = editor.currentAnnotationsForTest().constFirst();
+    return editor
+        .annotationPointToWidgetForTest((carried.start + carried.end) / 2.0)
+        .toPoint();
+  };
+  const auto matProbe = [&editor] {
+    const QRectF settled = editor.sourceFrameWidgetRectForTest();
+    return QPoint(qRound(settled.right()) + 30, qRound(settled.top()) + 20);
+  };
+  QPoint grip = arrowGrip();
+  QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, grip);
+  QTest::mouseMove(&editor, grip + QPoint(200, 0));
+  QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,
+                      grip + QPoint(200, 0));
+  application.processEvents();
+  if (!editor.currentCanvasForTest().contains(
+          QRectF(QPointF(), QSizeF(capture.previewSize)).adjusted(-1, -1, 1, 1)) ||
+      !matAt(matProbe())) {
+    error = QStringLiteral("Released outside, the Framed canvas did not settle "
+                           "grown with its mat");
+    return false;
+  }
+  grip = arrowGrip();
+  const QPoint probeGrown = matProbe();
+  // Hard against the image, where a mat's card shadow and Framed's narrow
+  // backing at rest would both show: with the layer home, neither belongs.
+  const QRectF grownFrame = editor.sourceFrameWidgetRectForTest();
+  const QPoint besideImage(qRound(grownFrame.right()) + 12,
+                           qRound(grownFrame.top()) + 20);
+  const QPoint belowImage(qRound(grownFrame.center().x()),
+                          qRound(grownFrame.bottom()) + 20);
+  const auto bareSurroundAt = [&editor](const QPoint &point) {
+    const QColor color = editor.grab().toImage().pixelColor(point);
+    return color.red() < 8 && color.green() < 8 && color.blue() < 8 &&
+           std::abs(color.alpha() - 160) <= 4;
+  };
+  QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, grip);
+  QTest::mouseMove(&editor, grip - QPoint(120, 0));
+  QTest::mouseMove(&editor, grip - QPoint(260, 0));
+  if (matAt(probeGrown)) {
+    error = QStringLiteral("Framed mat stayed behind a layer carried back "
+                           "inside until release");
+    return false;
+  }
+  if (!bareSurroundAt(besideImage) || !bareSurroundAt(belowImage)) {
+    error = QStringLiteral("A layer carried all the way home left the grown "
+                           "canvas's backing or card shadow around the image");
+    return false;
+  }
+  QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier,
+                      grip - QPoint(260, 0));
+  application.processEvents();
+  if (matAt(matProbe())) {
+    error = QStringLiteral("Framed canvas kept its mat after the layer settled "
+                           "back inside");
+    return false;
+  }
+  editor.close();
+  return true;
+}
+
+/** A label typed outside the image grows the canvas from the moment its
+ *  caret lands there and keeps pace with the text, instead of waiting for
+ *  the commit (and flashing away when the placing click ends). */
+bool runTextDraftGrowsCanvasSmoke(QApplication &application, QString &error) {
+  CaptureData capture;
+  capture.monitor.name = QStringLiteral("TEST");
+  capture.monitor.geometry = {0, 0, 1400, 700};
+  capture.monitor.pixelSize = {1400, 700};
+  capture.monitor.scale = 1.0;
+  capture.source = QImage(600, 400, QImage::Format_ARGB32_Premultiplied);
+  capture.source.fill(QColor(QStringLiteral("#d8dde6")));
+  capture.previewSize = capture.source.size();
+
+  CaptureEditor editor(capture, CaptureEditor::CaptureMode::File);
+  editor.resize(1400, 700);
+  editor.show();
+  application.processEvents();
+  QTest::keyClick(&editor, Qt::Key_T);
+
+  const QRectF source(QPointF(), QSizeF(capture.previewSize));
+  const QRectF frame = editor.sourceFrameWidgetRectForTest();
+  const QPoint caret(qRound(frame.right()) + 40, qRound(frame.center().y()));
+  const auto matAt = [&editor](const QPointF &point) {
+    const QColor color = editor.grab().toImage().pixelColor(point.toPoint());
+    return color.alpha() == 255 && colorNear(color, QColor(0x24, 0x24, 0x24));
+  };
+  // Widget position just inside the live canvas's right edge, level with
+  // the top of the image so no pill or glyph is in the way.
+  const auto insideRightEdge = [&editor, &frame] {
+    return QPointF(frame.left() + (editor.liveCanvasForTest().right() - 5.0) *
+                                      editor.editScaleForTest(),
+                   frame.top() + 20.0);
+  };
+  if (editor.liveCanvasForTest() != source) {
+    error = QStringLiteral("Canvas was grown before any text was placed");
+    return false;
+  }
+
+  QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, caret);
+  application.processEvents();
+  auto *draft = editor.findChild<QPlainTextEdit *>();
+  if (!draft || !draft->isVisible()) {
+    error = QStringLiteral("Text tool did not open an editor outside the image");
+    return false;
+  }
+  const QRectF placed = editor.liveCanvasForTest();
+  if (placed.right() < source.right() + 64.0 || !matAt(insideRightEdge())) {
+    error = QStringLiteral("Placing the text caret outside the image did not "
+                           "grow the canvas at once");
+    return false;
+  }
+
+  QTest::keyClicks(draft, QStringLiteral("well past the frame"));
+  application.processEvents();
+  const QRectF typed = editor.liveCanvasForTest();
+  if (typed.right() < placed.right() + 50.0 || !matAt(insideRightEdge())) {
+    error = QStringLiteral("Canvas did not keep growing with the text being "
+                           "typed (%1 then %2)")
+                .arg(placed.right())
+                .arg(typed.right());
+    return false;
+  }
+  for (int index = 0; index < 19; ++index)
+    QTest::keyClick(draft, Qt::Key_Backspace);
+  application.processEvents();
+  if (editor.liveCanvasForTest() != placed) {
+    error = QStringLiteral("Canvas did not shrink back with the deleted text");
+    return false;
+  }
+
+  // An empty caret clicked back inside the image takes its growth with it,
+  // and brings it back when it is placed outside again.
+  QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier,
+                    frame.center().toPoint());
+  application.processEvents();
+  if (!draft->isVisible() || editor.liveCanvasForTest() != source ||
+      matAt(QPointF(frame.right() + 30, frame.top() + 20))) {
+    error = QStringLiteral("A caret moved back inside the image left its "
+                           "canvas growth behind");
+    return false;
+  }
+  QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, caret);
+  application.processEvents();
+  if (!draft->isVisible() || editor.liveCanvasForTest() != placed) {
+    error = QStringLiteral("Placing the caret outside again did not grow the "
+                           "canvas as before");
+    return false;
+  }
+
+  // Committed, the canvas settles exactly where the draft had already put
+  // it, with Framed's margin of mat beyond the label rather than flush.
+  QTest::keyClicks(draft, QStringLiteral("well past the frame"));
+  application.processEvents();
+  const QRectF beforeCommit = editor.liveCanvasForTest();
+  QTest::keyClick(draft, Qt::Key_Return);
+  application.processEvents();
+  if (editor.currentAnnotationsForTest().size() != 1 ||
+      editor.currentCanvasForTest() != beforeCommit) {
+    const QRectF settled = editor.currentCanvasForTest();
+    error = QStringLiteral("Committing the text moved the canvas the draft had "
+                           "been showing: %1 wide while typing, %2 settled")
+                .arg(beforeCommit.width())
+                .arg(settled.width());
+    return false;
+  }
+  const qreal labelRight =
+      annotationTextBounds(editor.currentAnnotationsForTest().constFirst())
+          .right();
+  if (beforeCommit.right() < labelRight + 15.0 ||
+      beforeCommit.right() > labelRight + 18.0) {
+    error = QStringLiteral("Typed text was not given its 15 px margin of mat");
+    return false;
+  }
+  editor.close();
+  return true;
+}
+
+/** A spotlight dims newly exposed mat while text is still a draft, including
+ *  text placed beyond a canvas that the spotlight has already expanded. */
+bool runSpotlightTextDraftCanvasSmoke(QApplication &application, QString &error) {
+  CaptureData capture;
+  capture.monitor.name = QStringLiteral("TEST");
+  capture.monitor.geometry = {0, 0, 1600, 1000};
+  capture.monitor.pixelSize = {1600, 1000};
+  capture.monitor.scale = 1.0;
+  capture.source = QImage(600, 400, QImage::Format_ARGB32_Premultiplied);
+  capture.source.fill(QColor(QStringLiteral("#d8dde6")));
+  capture.previewSize = capture.source.size();
+
+  for (const auto boundaryMode : {CanvasBoundaryMode::Framed,
+                                  CanvasBoundaryMode::Overflow}) {
+    for (const bool alreadyGrown : {false, true}) {
+      for (const auto edge : {Qt::LeftEdge, Qt::TopEdge, Qt::RightEdge,
+                             Qt::BottomEdge}) {
+        Annotation spotlight;
+        spotlight.id = 1;
+        spotlight.kind = Annotation::Kind::Spotlight;
+        spotlight.start = {120, 120};
+        spotlight.end = {alreadyGrown ? 680.0 : 320.0, 260};
+        spotlight.magnification = 2.0;
+        Operation background;
+        background.type = Operation::Type::Background;
+        background.background = boundaryMode == CanvasBoundaryMode::Framed
+                                    ? BackgroundStyle::None
+                                    : BackgroundStyle::Slate;
+        background.imageShadow = false;
+        Operation boundary;
+        boundary.type = Operation::Type::CanvasBoundary;
+        boundary.canvasBoundary = boundaryMode;
+        Operation annotate;
+        annotate.type = Operation::Type::Annotate;
+        annotate.annotations = {spotlight};
+        OperationLog log;
+        log.ops = {background, boundary, annotate};
+        log.index = 3;
+        log.nextId = 2;
+        log.previewSize = capture.previewSize;
+        CaptureEditor editor(capture, CaptureEditor::CaptureMode::File,
+                             QuickOutputMode::None, log);
+        editor.setSuppressSnapshots(true);
+        editor.resize(1600, 1000);
+        editor.show();
+        application.processEvents();
+        const QRectF settled = editor.currentCanvasForTest();
+        QPointF caret(220, 180);
+        if (edge == Qt::LeftEdge)
+          caret.setX(settled.left() - 80);
+        else if (edge == Qt::TopEdge)
+          caret.setY(settled.top() - 80);
+        else if (edge == Qt::RightEdge)
+          caret.setX(settled.right() + 40);
+        else
+          caret.setY(settled.bottom() + 40);
+        QTest::keyClick(&editor, Qt::Key_T);
+        QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier,
+                         editor.annotationPointToWidgetForTest(caret).toPoint());
+        auto *draft = editor.findChild<QPlainTextEdit *>();
+        if (!draft || !draft->isVisible()) {
+          error = QStringLiteral("Spotlight text draft did not open");
+          return false;
+        }
+
+        // Sample the new strip clear of the pill, glyphs, lens and outline.
+        // The flat mat must be dimmed exactly as it is after commit/export.
+        const auto dimmedMat = [&](const QString &stage) {
+          application.processEvents();
+          const QRectF canvas = editor.liveCanvasForTest();
+          QPointF probe(576, 24);
+          if (edge == Qt::LeftEdge)
+            probe.setX((settled.left() + canvas.left()) / 2.0);
+          else if (edge == Qt::TopEdge)
+            probe.setY((settled.top() + canvas.top()) / 2.0);
+          else if (edge == Qt::RightEdge)
+            probe.setX((settled.right() + canvas.right()) / 2.0);
+          else
+            probe.setY((settled.bottom() + canvas.bottom()) / 2.0);
+          if (settled.contains(probe) || !canvas.contains(probe)) {
+            error = QStringLiteral("Text draft did not expand the tested edge");
+            return false;
+          }
+          const QImage preview = editor.grab().toImage();
+          const QPoint pixel =
+              (editor.annotationPointToWidgetForTest(probe) *
+               preview.devicePixelRatio()).toPoint();
+          const QColor color = preview.pixelColor(pixel);
+          if (color.alpha() != 255 || !colorNear(color, QColor(14, 14, 14), 2)) {
+            error = QStringLiteral("Spotlight did not dim the text draft's mat "
+                                   "while %1 (%2, grown %3, edge %4): %5")
+                        .arg(stage)
+                        .arg(static_cast<int>(boundaryMode))
+                        .arg(alreadyGrown)
+                        .arg(static_cast<int>(edge))
+                        .arg(color.name(QColor::HexArgb));
+            return false;
+          }
+          return true;
+        };
+        if (!dimmedMat(QStringLiteral("placing the caret")))
+          return false;
+        QTest::keyClicks(draft, QStringLiteral("outside note"));
+        if (!dimmedMat(QStringLiteral("typing")))
+          return false;
+        QTest::keyClick(draft, Qt::Key_A, Qt::ControlModifier);
+        QTest::keyClicks(draft, QStringLiteral("note"));
+        if (!dimmedMat(QStringLiteral("shortening the text")))
+          return false;
+        const QRectF live = editor.liveCanvasForTest();
+        if (editor.currentAnnotationsForTest().size() != 1 ||
+            editor.currentCanvasForTest() != settled) {
+          error = QStringLiteral("Text draft changed the committed document");
+          return false;
+        }
+        QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier,
+                         editor.annotationPointToWidgetForTest({40, 40}).toPoint());
+        if (draft->isVisible() ||
+            editor.currentAnnotationsForTest().size() != 2 ||
+            editor.currentCanvasForTest() != live ||
+            !dimmedMat(QStringLiteral("committed"))) {
+          if (error.isEmpty())
+            error = QStringLiteral("Committing spotlight text changed its canvas");
+          return false;
+        }
+        QTest::keyClick(&editor, Qt::Key_Z, Qt::ControlModifier);
+        if (editor.currentCanvasForTest() != settled ||
+            editor.currentAnnotationsForTest().size() != 1) {
+          error = QStringLiteral("Undo did not restore the spotlight canvas");
+          return false;
+        }
+        editor.close();
+      }
+    }
+  }
+  return true;
+}
+
+/** The inline editor is always sized to its text, so it has nothing to
+ *  scroll to: a long wrapped draft must never end up shifted sideways with
+ *  the start of every line cut off, whatever is typed or deleted. */
+bool runTextDraftNeverScrollsSmoke(QApplication &application, QString &error) {
+  // Larger than the window, so the editor shows it scaled: display-font line
+  // widths then round differently from the logical wrap, and the end of a
+  // full line can sit a pixel past the editor's right edge. Qt answers that
+  // by centring the caret, which shifts the whole draft by half its width.
+  CaptureData capture;
+  capture.monitor.name = QStringLiteral("TEST");
+  capture.monitor.geometry = {0, 0, 1400, 700};
+  capture.monitor.pixelSize = {1400, 700};
+  capture.monitor.scale = 1.0;
+  capture.source = QImage(1500, 900, QImage::Format_ARGB32_Premultiplied);
+  capture.source.fill(QColor(QStringLiteral("#d8dde6")));
+  capture.previewSize = capture.source.size();
+
+  CaptureEditor editor(capture, CaptureEditor::CaptureMode::File);
+  editor.resize(1400, 700);
+  editor.show();
+  application.processEvents();
+  if (qFuzzyCompare(editor.editScaleForTest(), 1.0)) {
+    error = QStringLiteral("Draft scroll check needs a scaled editor");
+    return false;
+  }
+  QTest::keyClick(&editor, Qt::Key_T);
+  const QRectF frame = editor.sourceFrameWidgetRectForTest();
+  QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier,
+                    QPoint(qRound(frame.left()) + 40, qRound(frame.top()) + 40));
+  application.processEvents();
+  auto *draft = editor.findChild<QPlainTextEdit *>();
+  if (!draft || !draft->isVisible()) {
+    error = QStringLiteral("Text tool did not open its editor");
+    return false;
+  }
+  const auto shifted = [draft](const QString &when, QString &problem) {
+    if (draft->horizontalScrollBar()->value() == 0 &&
+        draft->verticalScrollBar()->value() == 0)
+      return false;
+    problem = QStringLiteral("Inline text editor scrolled to %1,%2 %3")
+                  .arg(draft->horizontalScrollBar()->value())
+                  .arg(draft->verticalScrollBar()->value())
+                  .arg(when);
+    return true;
+  };
+  // Every prefix of a long paragraph, grown and then taken back again one
+  // character at a time, so the caret visits the end of every wrapped line.
+  // Words of every length from one to nine letters, so that some line ends
+  // up full to the last pixel with its trailing space hanging past the wrap.
+  QString paragraph;
+  for (int word = 0; word < 110; ++word)
+    paragraph += QString(1 + (word * 7) % 9, QLatin1Char('a' + word % 26)) +
+                 QLatin1Char(' ');
+  int typed = 0;
+  for (const QChar character : std::as_const(paragraph)) {
+    QTest::keyClick(draft, character.toLatin1());
+    ++typed;
+    if (shifted(QStringLiteral("while typing (%1 characters)").arg(typed),
+                error))
+      return false;
+  }
+  if (draft->document()->firstBlock().layout()->lineCount() < 3) {
+    error = QStringLiteral("Long draft did not wrap, so nothing was tested");
+    return false;
+  }
+  // Qt takes the draft to be as wide as its longest paragraph unwrapped, so
+  // the hidden horizontal bar has somewhere to go. Centring the caret does
+  // that, and so does a sideways swipe on a touchpad over the box.
+  if (draft->horizontalScrollBar()->maximum() <= 0) {
+    error = QStringLiteral("Draft had no sideways range, so nothing was tested");
+    return false;
+  }
+  const QPointF over = draft->viewport()->rect().center();
+  QWheelEvent swipe(over, draft->viewport()->mapToGlobal(over), QPoint(-180, 0),
+                    QPoint(-360, 0), Qt::NoButton, Qt::NoModifier,
+                    Qt::ScrollUpdate, false);
+  QApplication::sendEvent(draft->viewport(), &swipe);
+  if (shifted(QStringLiteral("after a sideways swipe"), error))
+    return false;
+  draft->horizontalScrollBar()->setValue(
+      draft->horizontalScrollBar()->maximum() / 2); // as centring the caret does
+  if (shifted(QStringLiteral("after Qt centred the caret"), error))
+    return false;
+  for (int index = 0; index < typed - 10; ++index) {
+    QTest::keyClick(draft, Qt::Key_Backspace);
+    if (shifted(QStringLiteral("after Backspace %1").arg(index + 1), error))
+      return false;
+  }
+  QTest::qWait(30); // deferred scrollbar resets have had their turn
+  if (shifted(QStringLiteral("once settled"), error))
+    return false;
+  editor.close();
   return true;
 }
 
@@ -5647,7 +6310,9 @@ bool runCanvasBoundaryModeSmoke(QApplication &application, QString &error) {
   const QRectF imageCanvas = captureCanvasRect(
       sourceFrame.size(), {outside}, CanvasBoundaryMode::Image);
   if (captureCanvasRect(sourceFrame.size(), {outside}) != framedCanvas ||
-      framedCanvas != QRectF(-64, -64, 327, 228) ||
+      // Right edge: the box's stroke ends at 263, plus Framed's 15 px of mat
+      // beyond a layer that outgrows the normal 64 px frame.
+      framedCanvas != QRectF(-64, -64, 342, 228) ||
       overflowCanvas != QRectF(0, 0, 263, 100) ||
       imageCanvas != sourceFrame ||
       captureCanvasRect(sourceFrame.size(), {},
@@ -11057,6 +11722,26 @@ int main(int argc, char **argv) {
     qWarning().noquote() << snapshotError;
     return 215;
   }
+  if (!runPointerDamageRepaintSmoke(application, snapshotError)) {
+    qWarning().noquote() << snapshotError;
+    return 138;
+  }
+  if (!runFramedLiveGrowthSmoke(application, snapshotError)) {
+    qWarning().noquote() << snapshotError;
+    return 139;
+  }
+  if (!runTextDraftGrowsCanvasSmoke(application, snapshotError)) {
+    qWarning().noquote() << snapshotError;
+    return 140;
+  }
+  if (!runSpotlightTextDraftCanvasSmoke(application, snapshotError)) {
+    qWarning().noquote() << snapshotError;
+    return 142;
+  }
+  if (!runTextDraftNeverScrollsSmoke(application, snapshotError)) {
+    qWarning().noquote() << snapshotError;
+    return 141;
+  }
   if (!runQuickOutputChecks(snapshotError)) {
     qWarning().noquote() << snapshotError;
     return 73;
@@ -12388,8 +13073,10 @@ int main(int argc, char **argv) {
       slateShadowProfile.back() == slate.red();
   const bool restrainedShadowStrength =
       bottomShadowProfile.front() >= 20 && slateShadowProfile.front() >= 20;
-  if (grownCanvas != QRectF(-64, -64, 228, 228) ||
-      grownExport.size() != QSize(228, 228) || !paintedOutsideSource ||
+  // The box's stroke ends at 153, inside the 64 px frame but closer to its
+  // edge than Framed's 15 px of mat allows, so that side reaches 168.
+  if (grownCanvas != QRectF(-64, -64, 232, 228) ||
+      grownExport.size() != QSize(232, 228) || !paintedOutsideSource ||
       grownExport.pixelColor(grownOrigin) != QColor(Qt::white) ||
       slateExport.size() != grownExport.size() ||
       slateExport.pixelColor(grownOrigin + QPoint(99, 90)) !=
@@ -12405,7 +13092,7 @@ int main(int argc, char **argv) {
       !restrainedShadowStrength ||
       !scaleIndependentShadow ||
       slateExport.pixelColor(grownOrigin + QPoint(152, 90)) != slate ||
-      highDpiGrowthExport.size() != QSize(456, 456) ||
+      highDpiGrowthExport.size() != QSize(464, 456) ||
       highDpiGrowthExport.pixelColor(highDpiGrowthOrigin + QPoint(199, 180)) !=
           QColor(Qt::white) ||
       !isSlateShadow(highDpiGrowthExport.pixelColor(highDpiGrowthOrigin +

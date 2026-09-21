@@ -35,11 +35,14 @@ preview keeps it on screen.
   fullscreen workspace around a screenshot, or resize and carry an existing
   layer past its edge, to grow the canvas. Source-based tools (redact, cut,
   OCR, and eyedropper) stay on the screenshot.
-  Framed growth is the default; `G` cycles to tight Overflow growth (only the
+  Framed growth is the default, with 15 px of mat kept beyond any layer that
+  outgrows the normal frame; `G` cycles to tight Overflow growth (only the
   sides needed by annotations, with no frame), then Image (the original canvas
   size, clipping every outside annotation). `Shift+G` cycles backward without
   changing layer geometry. New framed strips start in window gray with the
-  original screenshot's card shadow. `B` cycles through the colorful backdrops,
+  original screenshot's card shadow, and follow a layer live while it is drawn
+  or carried past the edge, or back inside it; a label being typed out there
+  counts from the moment its caret is placed. `B` cycles through the colorful backdrops,
   shadowed and flat window gray, and Off so a background can always be removed.
   Overflow with no backdrop leaves its added pixels transparent. `Shift+B`
   toggles the current shadow directly, and undo/delete can contract grown strips.

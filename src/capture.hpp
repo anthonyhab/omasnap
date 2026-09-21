@@ -197,6 +197,20 @@ inline constexpr qreal kMinimumTextWrapWidth = 48.0;
                                               qreal canvasWidth = 0.0);
 [[nodiscard]] QRectF annotationTextBounds(const Annotation &annotation,
                                           qreal canvasWidth = 0.0);
+/** Whether a spotlight has an opening inside `bounds`. The first one that
+ *  does dims everything else there, so it changes far more than its own
+ *  rectangle. */
+[[nodiscard]] bool spotlightOpens(const Annotation &annotation,
+                                  const QRectF &bounds);
+/** Width of the pen a layer's outline is stroked with; 0 when it has none. */
+[[nodiscard]] qreal annotationPenWidth(const Annotation &annotation);
+/**
+ * Extent of everything a layer paints, in annotation space, antialiasing
+ * included. Canvas growth and the editor's repaint damage both read it, so a
+ * layer can never paint outside what either of them allows for. Empty for a
+ * redaction, which only ever replaces source pixels.
+ */
+[[nodiscard]] QRectF annotationPaintedBounds(const Annotation &annotation);
 /**
  * Pixel-aligned annotation space selected by `boundaryMode`. Grow contains
  * every painted extent, Frame stops at the normal backdrop frame, and Image
@@ -298,18 +312,34 @@ void paintAnnotation(QPainter &painter, const Annotation &annotation,
                                       const QPointF &point,
                                       qreal tolerance = 0.0);
 [[nodiscard]] QPainterPath spotlightPath(const Annotation &annotation);
+/**
+ * Pixels of a composed canvas that the spotlights among `annotations`
+ * magnify, when all of that canvas (`sourceRect`) maps onto `targetBounds`.
+ * Lenses read a fraction of their own area, so a caller that composes the
+ * canvas on every paint needs only this much of it. Null when none opens.
+ */
+[[nodiscard]] QRectF spotlightSampleBounds(const QVector<Annotation> &annotations,
+                                           const QRectF &targetBounds,
+                                           const QRectF &sourceRect);
+/** `sourceRect` is the whole composed canvas in source pixels. `source` holds
+ *  all of it, or only the part that starts at `sourceOrigin` within it. */
 void paintSpotlights(QPainter &painter, const QImage &source,
                      const QRectF &targetBounds, const QRectF &sourceRect,
-                     const QVector<Annotation> &annotations);
+                     const QVector<Annotation> &annotations,
+                     const QPoint &sourceOrigin = {});
 /**
  * Paints the default annotation layer (spotlights, then vectors) in selection
  * space. Spotlights sample `redacted`, which must already include the
- * redaction layer so a loupe cannot magnify source pixels.
+ * redaction layer so a loupe cannot magnify source pixels. A null
+ * `sourceRect` means `redacted` is the whole canvas; otherwise the two follow
+ * paintSpotlights().
  */
 void paintDefaultLayer(QPainter &painter, const QImage &redacted,
                        const QRectF &logicalBounds,
                        const QVector<Annotation> &annotations,
-                       qreal arrowDisplayScale = 1.0);
+                       qreal arrowDisplayScale = 1.0,
+                       const QRectF &sourceRect = {},
+                       const QPoint &sourceOrigin = {});
 // Logical image-frame dimensions, shared by the editor and native-pixel export.
 inline constexpr qreal kBackdropMargin = 64.0;
 inline constexpr qreal kCaptureImageRadius = 14.0;

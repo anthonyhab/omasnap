@@ -39,6 +39,9 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+/// Mat a Framed canvas keeps beyond a layer that outgrew the normal frame.
+constexpr qreal kFramedLayerMargin = 15.0;
+
 bool loadCaptureFonts() {
   static const std::array<int, 3> fontIds{
       QFontDatabase::addApplicationFont(QStringLiteral(":/fonts/Neucha.ttf")),
@@ -141,17 +144,24 @@ QRectF annotationTextBounds(const Annotation &annotation,
   return glyphs.adjusted(-pad, -pad, pad, bottom - metrics.descent());
 }
 
-QRectF captureCanvasRect(const QSizeF &sourceFrameSize,
-                         const QVector<Annotation> &annotations,
-                         CanvasBoundaryMode boundaryMode) {
-  const QRectF sourceFrame(QPointF(), sourceFrameSize);
-  if (sourceFrame.isEmpty())
-    return {};
-  if (boundaryMode == CanvasBoundaryMode::Image)
-    return sourceFrame;
+qreal annotationPenWidth(const Annotation &annotation) {
+  switch (annotation.kind) {
+  case Annotation::Kind::Highlighter:
+    return std::max<qreal>(6.0, annotation.size * 3.0);
+  case Annotation::Kind::Freehand:
+  case Annotation::Kind::Line:
+    return std::max<qreal>(2.0, annotation.size);
+  case Annotation::Kind::Rectangle:
+  case Annotation::Kind::Ellipse:
+    return annotation.filled ? 0.0 : std::max<qreal>(2.0, annotation.size);
+  case Annotation::Kind::Spotlight:
+    return std::max<qreal>(1.0, annotation.size / 2.0);
+  default:
+    return 0.0;
+  }
+}
 
-  QRectF canvas = sourceFrame;
-
+QRectF annotationPaintedBounds(const Annotation &annotation) {
   const auto pointBounds = [](const QVector<QPointF> &points) {
     if (points.isEmpty())
       return QRectF();
@@ -167,56 +177,53 @@ QRectF captureCanvasRect(const QSizeF &sourceFrameSize,
     }
     return QRectF(QPointF(left, top), QPointF(right, bottom));
   };
-  const auto paintedBounds = [&](const Annotation &annotation) {
-    // Redaction only replaces pixels inside the source frame. Its geometry
-    // can extend past that frame, but there are no painted pixels there for a
-    // larger canvas to reveal.
-    if (annotation.kind == Annotation::Kind::Redaction)
+  // Redaction only replaces pixels inside the source frame. Its geometry
+  // can extend past that frame, but there are no painted pixels there for a
+  // larger canvas to reveal.
+  if (annotation.kind == Annotation::Kind::Redaction)
+    return QRectF();
+  if (annotation.kind == Annotation::Kind::Text)
+    return annotationTextBounds(annotation).adjusted(-1, -1, 1, 1);
+  if (annotation.kind == Annotation::Kind::Marker) {
+    const qreal diameter = std::max<qreal>(24.0, annotation.size * 6.0);
+    const qreal antialias =
+        std::max<qreal>(1.0, annotation.size * 0.35) / 2.0 + 1.0;
+    return QRectF(annotation.start.x() - diameter / 2.0,
+                  annotation.start.y() - diameter / 2.0, diameter, diameter)
+        .adjusted(-antialias, -antialias, antialias, antialias);
+  }
+  if (annotation.kind == Annotation::Kind::Freehand ||
+      annotation.kind == Annotation::Kind::Highlighter) {
+    if (annotation.points.size() < 2)
       return QRectF();
-    if (annotation.kind == Annotation::Kind::Text)
-      return annotationTextBounds(annotation).adjusted(-1, -1, 1, 1);
-    if (annotation.kind == Annotation::Kind::Marker) {
-      const qreal diameter = std::max<qreal>(24.0, annotation.size * 6.0);
-      const qreal antialias =
-          std::max<qreal>(1.0, annotation.size * 0.35) / 2.0 + 1.0;
-      return QRectF(annotation.start.x() - diameter / 2.0,
-                    annotation.start.y() - diameter / 2.0, diameter, diameter)
-          .adjusted(-antialias, -antialias, antialias, antialias);
-    }
-    if (annotation.kind == Annotation::Kind::Freehand ||
-        annotation.kind == Annotation::Kind::Highlighter) {
-      if (annotation.points.size() < 2)
-        return QRectF();
-      const qreal width =
-          annotation.kind == Annotation::Kind::Highlighter
-              ? std::max<qreal>(6.0, annotation.size * 3.0)
-              : std::max<qreal>(2.0, annotation.size);
-      const qreal extent = width / 2.0 + 1.0;
-      return pointBounds(annotation.points)
-          .adjusted(-extent, -extent, extent, extent);
-    }
+    const qreal extent = annotationPenWidth(annotation) / 2.0 + 1.0;
+    return pointBounds(annotation.points)
+        .adjusted(-extent, -extent, extent, extent);
+  }
 
-    QRectF bounds(annotation.start, annotation.end);
-    bounds = bounds.normalized();
-    if (annotation.kind == Annotation::Kind::Arrow) {
-      const QRectF visual = arrowVisualBounds(annotation);
-      return visual.isEmpty() ? QRectF() : visual.adjusted(-1, -1, 1, 1);
-    }
-    qreal extent = 1.0;
-    if (annotation.kind == Annotation::Kind::Line ||
-        annotation.kind == Annotation::Kind::Arrow ||
-        ((annotation.kind == Annotation::Kind::Rectangle ||
-          annotation.kind == Annotation::Kind::Ellipse) &&
-         !annotation.filled)) {
-      extent += std::max<qreal>(2.0, annotation.size) / 2.0;
-    } else if (annotation.kind == Annotation::Kind::Spotlight) {
-      extent += std::max<qreal>(1.0, annotation.size / 2.0) / 2.0;
-    }
-    return bounds.adjusted(-extent, -extent, extent, extent);
-  };
+  QRectF bounds(annotation.start, annotation.end);
+  bounds = bounds.normalized();
+  if (annotation.kind == Annotation::Kind::Arrow) {
+    const QRectF visual = arrowVisualBounds(annotation);
+    return visual.isEmpty() ? QRectF() : visual.adjusted(-1, -1, 1, 1);
+  }
+  const qreal extent = annotationPenWidth(annotation) / 2.0 + 1.0;
+  return bounds.adjusted(-extent, -extent, extent, extent);
+}
+
+QRectF captureCanvasRect(const QSizeF &sourceFrameSize,
+                         const QVector<Annotation> &annotations,
+                         CanvasBoundaryMode boundaryMode) {
+  const QRectF sourceFrame(QPointF(), sourceFrameSize);
+  if (sourceFrame.isEmpty())
+    return {};
+  if (boundaryMode == CanvasBoundaryMode::Image)
+    return sourceFrame;
+
+  QRectF canvas = sourceFrame;
 
   for (const Annotation &annotation : annotations) {
-    const QRectF bounds = paintedBounds(annotation);
+    const QRectF bounds = annotationPaintedBounds(annotation);
     if (!bounds.isNull())
       canvas = canvas.united(bounds);
   }
@@ -237,16 +244,20 @@ QRectF captureCanvasRect(const QSizeF &sourceFrameSize,
   }
 
   // Framed mode begins with the same frame as a regular backdrop, then
-  // extends only a side whose annotation exceeds it. Source and layer
-  // coordinates stay fixed.
+  // extends only a side whose annotation exceeds it, keeping a little mat
+  // beyond that layer so it never ends flush against the edge. Source and
+  // layer coordinates stay fixed.
   const QRectF backdropFrame = sourceFrame.adjusted(
       -kBackdropMargin, -kBackdropMargin, kBackdropMargin, kBackdropMargin);
-  const qreal left = std::floor(std::min(canvas.left(), backdropFrame.left()));
-  const qreal top = std::floor(std::min(canvas.top(), backdropFrame.top()));
+  const QRectF layers =
+      canvas.adjusted(-kFramedLayerMargin, -kFramedLayerMargin,
+                      kFramedLayerMargin, kFramedLayerMargin);
+  const qreal left = std::floor(std::min(layers.left(), backdropFrame.left()));
+  const qreal top = std::floor(std::min(layers.top(), backdropFrame.top()));
   const qreal right =
-      std::ceil(std::max(canvas.right(), backdropFrame.right()));
+      std::ceil(std::max(layers.right(), backdropFrame.right()));
   const qreal bottom =
-      std::ceil(std::max(canvas.bottom(), backdropFrame.bottom()));
+      std::ceil(std::max(layers.bottom(), backdropFrame.bottom()));
   return {left, top, right - left, bottom - top};
 }
 
@@ -1031,9 +1042,62 @@ QPainterPath spotlightPath(const Annotation &annotation) {
   return path;
 }
 
+bool spotlightOpens(const Annotation &annotation, const QRectF &bounds) {
+  if (annotation.kind != Annotation::Kind::Spotlight)
+    return false;
+  const QRectF lens =
+      QRectF(annotation.start, annotation.end).normalized().intersected(bounds);
+  return lens.width() >= 1 && lens.height() >= 1;
+}
+
+namespace {
+/** Source pixels a spotlight's lens magnifies, when `sourceRect` is the
+ *  composed canvas that maps onto `targetBounds`. */
+QRectF spotlightSample(const Annotation &annotation,
+                       const QRectF &targetBounds, const QRectF &sourceRect) {
+  const QRectF lens = QRectF(annotation.start, annotation.end).normalized();
+  const qreal magnification = std::clamp(annotation.magnification, 1.0, 4.0);
+  QSizeF sampleSize(sourceRect.width() * lens.width() / targetBounds.width() /
+                        magnification,
+                    sourceRect.height() * lens.height() /
+                        targetBounds.height() / magnification);
+  sampleSize.setWidth(std::min(sampleSize.width(), sourceRect.width()));
+  sampleSize.setHeight(std::min(sampleSize.height(), sourceRect.height()));
+  const QPointF normalizedCenter(
+      (lens.center().x() - targetBounds.left()) / targetBounds.width(),
+      (lens.center().y() - targetBounds.top()) / targetBounds.height());
+  const QPointF sampleCenter(
+      sourceRect.left() + normalizedCenter.x() * sourceRect.width(),
+      sourceRect.top() + normalizedCenter.y() * sourceRect.height());
+  QRectF sample(sampleCenter.x() - sampleSize.width() / 2.0,
+                sampleCenter.y() - sampleSize.height() / 2.0,
+                sampleSize.width(), sampleSize.height());
+  sample.moveLeft(std::clamp(sample.left(), sourceRect.left(),
+                             sourceRect.right() - sample.width()));
+  sample.moveTop(std::clamp(sample.top(), sourceRect.top(),
+                            sourceRect.bottom() - sample.height()));
+  return sample;
+}
+} // namespace
+
+QRectF spotlightSampleBounds(const QVector<Annotation> &annotations,
+                             const QRectF &targetBounds,
+                             const QRectF &sourceRect) {
+  QRectF bounds;
+  if (targetBounds.isEmpty() || sourceRect.isEmpty())
+    return bounds;
+  for (const Annotation &annotation : annotations) {
+    if (spotlightOpens(annotation, targetBounds))
+      bounds = bounds.united(
+          spotlightSample(annotation, targetBounds, sourceRect));
+  }
+  return bounds;
+}
+
 void paintSpotlights(QPainter &painter, const QImage &source,
                      const QRectF &targetBounds, const QRectF &sourceRect,
-                     const QVector<Annotation> &annotations) {
+                     const QVector<Annotation> &annotations,
+                     const QPoint &sourceOrigin) {
   if (source.isNull() || targetBounds.isEmpty() || sourceRect.isEmpty())
     return;
 
@@ -1041,12 +1105,7 @@ void paintSpotlights(QPainter &painter, const QImage &source,
   QPainterPath dimmed;
   dimmed.addRect(targetBounds);
   for (const Annotation &annotation : annotations) {
-    if (annotation.kind != Annotation::Kind::Spotlight)
-      continue;
-    const QRectF lens =
-        QRectF(annotation.start, annotation.end).normalized().intersected(
-            targetBounds);
-    if (lens.width() < 1 || lens.height() < 1)
+    if (!spotlightOpens(annotation, targetBounds))
       continue;
     QPainterPath opening = spotlightPath(annotation);
     QPainterPath targetClip;
@@ -1063,26 +1122,10 @@ void paintSpotlights(QPainter &painter, const QImage &source,
   painter.fillPath(dimmed, QColor(0, 0, 0, 154));
   for (const Annotation *annotation : spotlights) {
     const QRectF lens = QRectF(annotation->start, annotation->end).normalized();
-    const qreal magnification = std::clamp(annotation->magnification, 1.0, 4.0);
-    QSizeF sampleSize(sourceRect.width() * lens.width() / targetBounds.width() /
-                          magnification,
-                      sourceRect.height() * lens.height() /
-                          targetBounds.height() / magnification);
-    sampleSize.setWidth(std::min(sampleSize.width(), sourceRect.width()));
-    sampleSize.setHeight(std::min(sampleSize.height(), sourceRect.height()));
-    const QPointF normalizedCenter(
-        (lens.center().x() - targetBounds.left()) / targetBounds.width(),
-        (lens.center().y() - targetBounds.top()) / targetBounds.height());
-    const QPointF sampleCenter(
-        sourceRect.left() + normalizedCenter.x() * sourceRect.width(),
-        sourceRect.top() + normalizedCenter.y() * sourceRect.height());
-    QRectF sample(sampleCenter.x() - sampleSize.width() / 2.0,
-                  sampleCenter.y() - sampleSize.height() / 2.0,
-                  sampleSize.width(), sampleSize.height());
-    sample.moveLeft(std::clamp(sample.left(), sourceRect.left(),
-                               sourceRect.right() - sample.width()));
-    sample.moveTop(std::clamp(sample.top(), sourceRect.top(),
-                              sourceRect.bottom() - sample.height()));
+    // `source` may hold only the part of the canvas the lenses read; a whole
+    // pixel offset moves the sample into it without disturbing its phase.
+    const QRectF sample = spotlightSample(*annotation, targetBounds, sourceRect)
+                              .translated(-QPointF(sourceOrigin));
 
     const QPainterPath lensClip = spotlightPath(*annotation);
     painter.save();
@@ -1107,9 +1150,11 @@ void paintSpotlights(QPainter &painter, const QImage &source,
 void paintDefaultLayer(QPainter &painter, const QImage &redacted,
                        const QRectF &logicalBounds,
                        const QVector<Annotation> &annotations,
-                       qreal arrowDisplayScale) {
-  paintSpotlights(painter, redacted, logicalBounds, QRectF(redacted.rect()),
-                  annotations);
+                       qreal arrowDisplayScale, const QRectF &sourceRect,
+                       const QPoint &sourceOrigin) {
+  paintSpotlights(painter, redacted, logicalBounds,
+                  sourceRect.isNull() ? QRectF(redacted.rect()) : sourceRect,
+                  annotations, sourceOrigin);
   // What a capture is annotated *with* goes over what it is annotated *on*:
   // text, then counters, after everything else. A label buried under a
   // rectangle is a label nobody can read, and the number that points at it

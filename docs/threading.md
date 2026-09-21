@@ -76,6 +76,27 @@ probe rather than scanning in the input handler. Reintroducing a bare
 `update()` in `mouseMoveEvent`, or image analysis from `updatePointerCursor()`,
 turns that bounded path back into a full-display stall.
 
+The other half of that bargain is that damage must cover every pixel
+`paintEdit()` would draw differently, or the backing store keeps a stale patch
+beside fresh ones: a torn outline, a block of backdrop behind a carried layer.
+So damage is derived from what paints rather than modelled beside it.
+`pointerMotionRegion()` reads the same `liveLayers()` that `paintEdit()` draws,
+takes ink extents from `annotationPaintedBounds()` (the bounds that grow the
+canvas), adds the selection chrome around a carried layer, and
+`liveCanvasDamage()` repaints the mat when carrying a layer grows or shrinks
+the canvas being previewed (only the strips that differ for a flat mat, all of
+it for a gradient laid out afresh), or the whole canvas when a spotlight's
+dimming covers it or switches on: that happens on a pointer move, with the
+first pixel of a lens being dragged out, not on the press.
+`QWidget::grab()` repaints everything and so can never see a missed pixel; the
+smoke suite compares it against the backing store in the middle of a drag.
+
+Bounded damage only helps if painting is bounded too. A spotlight magnifies
+the composed canvas (mat, shadow, redacted image), and composing all of that at
+display resolution cost tens of milliseconds on every paint however small the
+damage. `paintEdit()` composes just the patch `spotlightSampleBounds()` says
+the lenses read, which is a fraction of their own area.
+
 ## The one documented exception
 
 Before any window exists — single-instance handover in `src/instance-lock.cpp`,

@@ -108,6 +108,11 @@ public:
   [[nodiscard]] QRectF currentSelection() const { return selection_; }
   /** Annotation-space canvas, including any strips grown past the source. */
   [[nodiscard]] QRectF currentCanvasForTest() const { return canvasRect_; }
+  /** Canvas the edit view shows right now: the settled one, or the preview a
+   *  carried layer or a label being typed gives it. */
+  [[nodiscard]] QRectF liveCanvasForTest() const {
+    return liveCanvas(liveLayers(cursor_)).rect;
+  }
   [[nodiscard]] CanvasBoundaryMode currentCanvasBoundaryForTest() const {
     return canvasBoundaryMode_;
   }
@@ -595,6 +600,8 @@ private:
   [[nodiscard]] EditState editState() const;
   void refreshCanvasRect();
   [[nodiscard]] bool canvasGrown() const;
+  /** Whether `canvas` reaches past the source frame on any side. */
+  [[nodiscard]] bool exceedsSourceFrame(const QRectF &canvas) const;
   [[nodiscard]] BackgroundStyle effectiveBackgroundStyle() const;
   [[nodiscard]] bool hasCaptureBackground() const;
   void enterEdit(QString status);
@@ -636,7 +643,43 @@ private:
   void dismissOcrOverlay();
   void paintOcrOverlay(QPainter &painter, const QRectF &image, qreal scale);
   void setStatus(QString status);
-  [[nodiscard]] QRegion pointerMotionRegion(const QPointF &point) const;
+  /** Default-layer annotations as the edit view shows them right now. */
+  struct LiveLayers {
+    /// Committed layers, minus the one being typed into, plus `preview`.
+    QVector<Annotation> annotations;
+    /// Index of the layer in progress (a dragged-out shape or the counter
+    /// ghost), or -1.
+    int preview = -1;
+    /// A drag or an off-canvas ghost may show layers past the settled canvas.
+    bool carried = false;
+  };
+  /** What paintEdit() draws for the pointer at `pointer`; pointer damage
+   *  reads the same layers so the two cannot drift apart. */
+  [[nodiscard]] LiveLayers liveLayers(const QPointF &pointer) const;
+  /** What paintEdit() fills beyond the layers themselves. */
+  struct LiveCanvas {
+    /// The settled canvas, or the bounds a carried layer would settle to.
+    QRectF rect;
+    /// `rect` is such a preview: the mat is laid over it, filled with
+    /// `backdrop`, instead of over the settled canvas while the layer is
+    /// carried, whether that makes the mat larger or smaller.
+    bool previews = false;
+    BackgroundStyle backdrop = BackgroundStyle::None;
+    /// A spotlight has an opening in `rect`, so all the rest of it is dimmed.
+    bool dimmed = false;
+    bool operator==(const LiveCanvas &) const = default;
+  };
+  [[nodiscard]] LiveCanvas liveCanvas(const LiveLayers &live) const;
+  /** The text layer the inline editor would commit right now, laid out as
+   *  its cream pill shows it. Only meaningful while textEditing(). */
+  [[nodiscard]] Annotation draftTextAnnotation() const;
+  /** Pixels that depend on the pointer at `point`. `canvas`, when given,
+   *  receives liveCanvas() for the same state. */
+  [[nodiscard]] QRegion pointerMotionRegion(const QPointF &point,
+                                            LiveCanvas *canvas = nullptr) const;
+  /** Pixels repainted when the live canvas changes between two states. */
+  [[nodiscard]] QRegion liveCanvasDamage(const LiveCanvas &before,
+                                         const LiveCanvas &after) const;
   [[nodiscard]] QRegion windowHoverDamage(int oldIndex, int newIndex) const;
   void queuePointerRepaint(const QRegion &damage);
   void toggleShapeFill();
