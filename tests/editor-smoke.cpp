@@ -20,6 +20,7 @@
 #include "palette-config-smoke.hpp"
 #include "pin-layout-smoke.hpp"
 #include "stitch-smoke.hpp"
+#include "scroll-startup-smoke.hpp"
 #include "stitch.hpp"
 #include "stroke-smoothing-smoke.hpp"
 #include "pin-lifecycle-smoke.hpp"
@@ -12266,6 +12267,10 @@ int main(int argc, char **argv) {
   if (!runAsyncCaptureRegionSmoke(application, snapshotError)) {
     qWarning().noquote() << snapshotError;
     return 82;
+  }
+  if (!runScrollStartupSmoke(snapshotError)) {
+    qWarning().noquote() << snapshotError;
+    return EXIT_FAILURE;
   }
   if (!runPinLayoutSmoke(snapshotError)) {
     qWarning().noquote() << snapshotError;

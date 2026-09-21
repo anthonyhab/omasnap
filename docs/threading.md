@@ -142,23 +142,19 @@ purpose every time, since nothing enforces it automatically.
   the editor or displays an error. Automatic copy-and-preview output uses the
   same worker helper, including clipboard verification.
 
-## A known violation, not yet fixed
+## Auto-scroll startup
 
-`spawnScrollInjector()` (`src/scroll-inject.cpp`) is called synchronously
-from the UI thread when auto-scroll starts or Continues
-(`ScrollCapturePanel::startCapture`/`continueCapture` in
-`src/scroll-capture.cpp`), and it deliberately probes the injection
-backends before returning — including `hyprctl getoption
-input:natural_scroll`, a subprocess spawn with up to a 2-second
-`waitForFinished`. That's a real, if brief and infrequent (once per
-auto-scroll start, not per frame), block on the UI thread. It hasn't been
-moved to a worker because the auto-scroll injector is the most delicate,
-most recently hardened part of the codebase and depends on live
-Hyprland/Wayland state that the offline smoke suite cannot exercise —
-changing its threading needs a live re-verification pass, not just a
-green `make check`. Fix it with the same worker/watcher shape above
-(`QtConcurrent::run` wrapping the whole call, a small watcher applying the
-result) when you can test it live.
+Auto-scroll Start and Continue run `spawnScrollInjector()` on a setup worker,
+including the natural-scroll subprocess query and Wayland/uinput probes. A
+watcher starts capture or reports setup failure on the GUI thread. Each attempt
+owns copied inputs and its own shared stop token; Back, Cancel and destruction
+cancel it without waiting for setup. A stale completion cannot start capture in
+a later session. The injection thread checks cancellation during its initial
+settle, before parking or nudging the pointer.
+
+Backend setup and injection still need live Hyprland verification when changed:
+offscreen tests cover responsiveness, cancellation, stale completions and panel
+lifetime, but cannot prove that compositor input reaches the underlying page.
 
 ## Adding new work
 

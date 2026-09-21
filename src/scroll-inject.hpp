@@ -19,7 +19,8 @@
 /// inside the region. The worker publishes ready cycles on `handshake`
 /// (cycle 1 = the unscrolled first frame), scrolls the acknowledged notch
 /// count per cycle, and sets `stop` itself on any exit so its death is always
-/// observable. Returns false with `error` set when no backend is available.
+/// observable. Call off the GUI thread: backend probing can block. Returns
+/// false when cancelled, or with `error` set when no backend is available.
 [[nodiscard]] bool spawnScrollInjector(
     std::shared_ptr<std::atomic<bool>> stop,
     std::shared_ptr<stitch::CaptureHandshake> handshake, int parkX, int parkY,

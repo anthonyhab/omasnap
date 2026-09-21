@@ -190,6 +190,8 @@ qt_add_executable(omasnap-smoke
   src/auto-capture.hpp
   tests/stitch-smoke.cpp
   tests/stitch-smoke.hpp
+  tests/scroll-startup-smoke.cpp
+  tests/scroll-startup-smoke.hpp
 )
 target_include_directories(omasnap-smoke PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/tests"
