@@ -40,6 +40,12 @@ the capture loop (grab → crop → classify → accumulate) runs on a worker
 thread so the overlay keeps painting the live page and the mode pills while
 frames come in, however slow the compositor's damage-driven capture is.
 
+`ChromeThemeWatcher` in `src/chrome-theme.cpp` reads and parses Omarchy's theme
+files on a worker too. The GUI applies a completed palette and repaints open
+windows; paint handlers only read in-memory values. Debounced filesystem
+notifications trigger reloads, including when the whole theme directory is
+replaced, so idle windows do not poll the filesystem.
+
 ## What this buys, concretely
 
 - **OCR**: whole-image or drag-region text recognition spawns `tesseract`

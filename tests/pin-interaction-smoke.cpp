@@ -2,12 +2,65 @@
 // window API or test hooks to the production binary. pin.cpp is not otherwise
 // linked into the smoke executable.
 #include "../src/pin.cpp"
+#include "chrome-theme.hpp"
+#include "pin-layout.hpp"
 #include "pin-interaction-smoke.hpp"
 
+#include <QByteArray>
 #include <QHelpEvent>
+#include <QImage>
+#include <QPoint>
+#include <QRectF>
 #include <QScopeGuard>
+#include <QString>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QThreadPool>
+#include <Qt>
+#include <QtEnvironmentVariables>
+#include <QtMath>
+
+bool runPinThemeRenderingSmoke(const QString &path, QString &error) {
+  const QTemporaryDir runtime;
+  if (!runtime.isValid()) {
+    error = QStringLiteral("Could not isolate the pin theme fixture");
+    return false;
+  }
+  const QByteArray previousRuntime = qgetenv("XDG_RUNTIME_DIR");
+  const auto restore = qScopeGuard([&] {
+    pinPool().waitForDone();
+    QThreadPool::globalInstance()->waitForDone();
+    if (previousRuntime.isNull())
+      qunsetenv("XDG_RUNTIME_DIR");
+    else
+      qputenv("XDG_RUNTIME_DIR", previousRuntime);
+  });
+  qputenv("XDG_RUNTIME_DIR", runtime.path().toUtf8());
+  QImage source(320, 200, QImage::Format_ARGB32_Premultiplied);
+  source.fill(Qt::transparent);
+  const QString sourcePath = runtime.filePath(QStringLiteral("source.png"));
+  if (!source.save(sourcePath)) {
+    error = QStringLiteral("Could not save the pin theme fixture");
+    return false;
+  }
+  // No show/event loop: no compositor placement or interaction is requested.
+  PinWindow pin(source, sourcePath, source.size());
+  QImage card(source.size(), QImage::Format_ARGB32_Premultiplied);
+  card.fill(Qt::transparent);
+  pin.render(&card);
+  const QRectF button = pinControlRect(pin.size(), 5);
+  const QPoint fill(qRound(button.left() + 2), qRound(button.center().y()));
+  const bool saved = card.save(path);
+  if (card.pixelColor(160, 100).rgba() != chromeTheme().surface.rgba() ||
+      card.pixelColor(fill).rgba() != chromeTheme().button.rgba() || !saved) {
+    error = QStringLiteral("Pin chrome: surface=%1 expected=%2, button=%3 expected=%4 at %5,%6")
+                .arg(card.pixelColor(160, 100).name(), chromeTheme().surface.name(),
+                     card.pixelColor(fill).name(), chromeTheme().button.name())
+                .arg(fill.x()).arg(fill.y());
+    return false;
+  }
+  return true;
+}
 
 bool runPinInteractionSmoke(QString &error) {
   QTemporaryDir runtime;

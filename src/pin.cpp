@@ -5,6 +5,7 @@
 #include <QSaveFile>
 #include <QDateTime>
 #include "pin.hpp"
+#include "chrome-theme.hpp"
 #include "card-stack.hpp"
 #include "capture.hpp"
 #include "pin-file.hpp"
@@ -532,17 +533,7 @@ public:
     // its own instead of first stretching it into a tile.
     setFixedSize(frame);
     setAttribute(Qt::WA_AlwaysShowToolTips, true);
-    // Native tooltips need the same explicit font and dark chrome as the
-    // painted controls; the generic Qt theme otherwise supplies yellow tips.
     QToolTip::setFont(chromeFont(11));
-    setStyleSheet(QStringLiteral(
-        "QToolTip {"
-        " color: #f5f5f7;"
-        " background-color: #121216;"
-        " border: 1px solid #3a3a40;"
-        " border-radius: 4px;"
-        " padding: 0;"
-        "}"));
     setMouseTracking(true);
     connect(&expiry_, &PinExpiry::opacityChanged, this, [this](qreal opacity) {
       opacity_ = opacity;
@@ -797,7 +788,7 @@ protected:
     const QPainterPath card = cardPath();
     painter.save();
     painter.setClipPath(card);
-    painter.fillRect(rect(), QColor(18, 18, 22));
+    painter.fillRect(rect(), chromeTheme().surface);
     if (!image_.isNull()) {
       const qreal scale =
           std::max(static_cast<qreal>(width()) / image_.width(),
@@ -808,11 +799,11 @@ protected:
     }
     painter.restore();
     painter.setBrush(Qt::NoBrush);
-    painter.setPen(QPen(hovered_ ? QColor(140, 179, 209, 210)
-                                : QColor(255, 255, 255, 75), 1.5));
+    painter.setPen(QPen((hovered_ ? chromeTheme().activeBorder
+                                  : chromeTheme().inactiveBorder).brush(rect()), 1.5));
     painter.drawPath(card);
     if (expiry_.kept() && !hovered_)
-      drawControlButton(painter, pinButtonRect(), QStringLiteral("pin"), true);
+      drawControlButton(painter, pinButtonRect(), QStringLiteral("pin"));
     painter.restore();
     if (!toast_.isEmpty())
       paintToast(painter);
@@ -820,26 +811,28 @@ protected:
       return;
 
     drawControlButton(painter, dragButtonRect(), QStringLiteral("drag-handle"));
-    drawControlButton(painter, editButtonRect(), QStringLiteral("edit"), false,
+    drawControlButton(painter, editButtonRect(), QStringLiteral("edit"),
                        QStringLiteral("Edit"));
-    drawControlButton(painter, pinButtonRect(), QStringLiteral("pin"), expiry_.kept());
+    drawControlButton(painter, pinButtonRect(), QStringLiteral("pin"));
     drawControlButton(painter, pathButtonRect(), QStringLiteral("path"));
-    drawControlButton(painter, copyButtonRect(), QStringLiteral("copy"), false,
+    drawControlButton(painter, copyButtonRect(), QStringLiteral("copy"),
                        QStringLiteral("Copy"));
     drawControlButton(painter, closeButtonRect(), QStringLiteral("close"));
   }
 
   void drawControlButton(QPainter &painter, const QRectF &rect,
-                         const QString &action, bool active = false,
+                         const QString &action,
                          const QString &label = {}) const {
     painter.setPen(Qt::NoPen);
     const bool hovered = hovered_ && rect == controlRect(hoveredControl_);
-    painter.setBrush(active ? QColor(37, 58, 75, 235)
-                            : hovered ? QColor(37, 42, 52, 240)
-                                      : QColor(12, 12, 16, 210));
+    painter.setBrush(hovered ? chromeTheme().buttonHover : chromeTheme().button);
     painter.drawRoundedRect(rect, 6, 6);
-    const QColor foreground = active ? QColor(140, 179, 209)
-                                     : QColor(245, 245, 247);
+    // Kept state is independent of hover. Gradient borders use their leading
+    // color for the small pin glyph.
+    const QColor foreground = action == QStringLiteral("pin") && expiry_.kept()
+                                  ? chromeTheme().activeBorder.colors.constFirst()
+                              : hovered ? chromeTheme().buttonHoverText
+                                        : chromeTheme().buttonText;
     if (label.isEmpty()) {
       drawToolbarIcon(painter, rect, action, {}, foreground);
     } else {
@@ -856,9 +849,9 @@ protected:
                       26);
     painter.setRenderHint(QPainter::Antialiasing, true);
     painter.setPen(Qt::NoPen);
-    painter.setBrush(QColor(12, 12, 16, 205));
+    painter.setBrush(chromeTheme().toastBackground);
     painter.drawRoundedRect(pill, 13, 13);
-    painter.setPen(QColor(240, 240, 245));
+    painter.setPen(chromeTheme().toastText);
     painter.drawText(pill, Qt::AlignCenter, toast_);
   }
 

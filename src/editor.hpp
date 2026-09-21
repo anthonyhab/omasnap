@@ -810,8 +810,9 @@ private:
   QImage redactionBase_;
   QSize redactionBaseSize_;
   bool redactionBaseStale_ = true;
-  // Select-phase capture scaled and dimmed once per source, widget size, and DPR.
+  // Select-phase capture scaled and dimmed once per source, size, DPR, and theme.
   QPixmap dimmedBackdrop_;
+  QColor backdropScrim_;
   QSize backdropSize_;
   qreal backdropRatio_ = 0.0;
   qint64 backdropKey_ = 0;
