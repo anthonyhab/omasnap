@@ -478,7 +478,8 @@ Idle pins overlap in a compact deck at the focused monitor's bottom-right
 corner, newest in front. The front card stays straight; the cards behind it
 alternate the same growing lean as the recents shelf: −3°, +6°, −9°, +12°.
 Omasnap paints the rounded frames with the images so their edges tilt together,
-with transparent corners that take no input.
+with transparent corners that take no input. Theme changes keep this single frame
+without adding a second compositor outline.
 Hover to straighten and fan them upward into fully exposed cards, wrapping into
 further columns when needed. The front card stays anchored; moving between cards
 keeps the fan open, and leaving folds it after a short delay. Placement accounts for

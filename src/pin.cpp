@@ -115,6 +115,32 @@ bool hyprDispatch(const QString &expression) {
   return ok && output.trimmed() == QStringLiteral("ok");
 }
 
+bool preservePinFrame(const QString &address) {
+  // A theme reload discards runtime window rules. Per-window properties
+  // survive it, so the compositor cannot add a second frame around our card.
+  QStringList commands;
+  for (const auto &property : {
+           qMakePair(QStringLiteral("border_size"), QStringLiteral("0")),
+           qMakePair(QStringLiteral("rounding"), QStringLiteral("0")),
+           qMakePair(QStringLiteral("no_shadow"), QStringLiteral("true")),
+           qMakePair(QStringLiteral("no_blur"), QStringLiteral("true")),
+           qMakePair(QStringLiteral("no_follow_mouse"), QStringLiteral("false"))}) {
+    commands.push_back(
+        QStringLiteral("dispatch hl.dsp.window.set_prop({ prop = \"%1\", "
+                       "value = \"%2\", window = \"address:%3\" })")
+            .arg(property.first, property.second, address));
+  }
+  bool ok = false;
+  const QString output = runForOutput(
+      QStringLiteral("hyprctl"),
+      {QStringLiteral("--batch"), commands.join(QStringLiteral("; "))}, &ok);
+  const QStringList replies = output.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+  return ok && replies.size() == commands.size() &&
+         std::all_of(replies.cbegin(), replies.cend(), [](const QString &reply) {
+           return reply.trimmed() == QStringLiteral("ok");
+         });
+}
+
 struct CompositorMonitor {
   QRect geometry;
   QRect workArea;
@@ -1634,6 +1660,8 @@ int runPinnedCapture(const QString &path, PinLifetime lifetime) {
       if (!own->floating && !hyprDispatch(pinFloatDispatch(own->address)))
         return {};
       if (!own->pinned && !hyprDispatch(pinPinDispatch(own->address)))
+        return {};
+      if (!preservePinFrame(own->address))
         return {};
       // A new capture is the front of the idle deck. Keep an already-open
       // fan exposed, and never rearrange pins during somebody else's drag.
