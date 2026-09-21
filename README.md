@@ -53,6 +53,8 @@ pause its countdown; only the pin button or `Ctrl+P` keeps it on screen.
   mesh-gradient backdrops, and rendered drop shadows on standard backdrop cards.
 - Cut tool: drag across a band of the image to remove it and collapse the gap, with a
   live preview and dashed seam marker while dragging; annotations shift to follow.
+  Moving or resizing an existing layer suspends the armed tool's action until
+  release, then leaves the tool ready for the next canvas gesture.
 - Pin a finished capture as a bottom-right floating compositor window, launched
   from the same `omasnap` executable and visible on every workspace.
   Pins form a compact deck with the recents shelf's alternating tilt while
