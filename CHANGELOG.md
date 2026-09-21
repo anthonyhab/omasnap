@@ -22,6 +22,8 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 
 ### Fixed
 
+- Keep dashed selection outlines stable during partial repaints, including
+  narrow rounded rectangles and scaled displays.
 - Match the editor's background padding, image corners, and scaled shadows to
   saved captures, and fit the complete background frame in the preview.
 - Keep previews and pins frameless at the compositor level across theme changes,
