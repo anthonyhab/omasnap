@@ -14,6 +14,10 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 
 ### Changed
 
+- Canvas growth is live in both directions: the mat and card shadow follow a
+  layer as it is drawn or carried past the image edge, and give way again as
+  it is carried back, instead of settling on release. Framed previews its
+  window-gray frame the way Overflow previews its tight bounds.
 - Keep a preview pinned once it is dragged, whether reordering the stack or
   moving it elsewhere on screen, including Super+left-drag.
 - Use the active window-border color for the pin icon while a preview is pinned.

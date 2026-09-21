@@ -595,6 +595,8 @@ private:
   [[nodiscard]] EditState editState() const;
   void refreshCanvasRect();
   [[nodiscard]] bool canvasGrown() const;
+  /** Whether `canvas` reaches past the source frame on any side. */
+  [[nodiscard]] bool exceedsSourceFrame(const QRectF &canvas) const;
   [[nodiscard]] BackgroundStyle effectiveBackgroundStyle() const;
   [[nodiscard]] bool hasCaptureBackground() const;
   void enterEdit(QString status);
@@ -651,8 +653,13 @@ private:
   [[nodiscard]] LiveLayers liveLayers(const QPointF &pointer) const;
   /** What paintEdit() fills beyond the layers themselves. */
   struct LiveCanvas {
-    /// The settled canvas, or the bounds a carried layer previews.
+    /// The settled canvas, or the bounds a carried layer would settle to.
     QRectF rect;
+    /// `rect` is such a preview: the mat is laid over it, filled with
+    /// `backdrop`, instead of over the settled canvas while the layer is
+    /// carried, whether that makes the mat larger or smaller.
+    bool previews = false;
+    BackgroundStyle backdrop = BackgroundStyle::None;
     /// A spotlight has an opening in `rect`, so all the rest of it is dimmed.
     bool dimmed = false;
     bool operator==(const LiveCanvas &) const = default;
