@@ -402,7 +402,7 @@ int main(int argc, char **argv) {
                               : renderCapture(capture,
                                               QRectF(QPointF(), capture.previewSize), {},
                                               BackgroundStyle::None);
-    if (!quickOutput(output, quickOutputMode, outputError)) {
+    if (!quickOutput(output, quickOutputMode, outputError, capture.previewSize)) {
       qCritical().noquote() << outputError;
       return 1;
     }

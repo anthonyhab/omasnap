@@ -312,12 +312,15 @@ words after a trailing `--exec`, which the shell runs directly without shell par
 
 ### Recent captures
 
-Every capture finished from the editor (copied, saved, or both) keeps its working
-document, source plus operation log, on a shelf of the five most recent under
+Every completed capture keeps its working document, source plus operation log,
+on a shelf of the five most recent under
 `~/.local/state/omasnap/recent/` (`OMASNAP_RECENT_DIR` overrides). The select
 overlay shows them as a small stack of cards on the right; hovering fans them out
 and clicking one reopens that capture in the editor, undo history intact, in place
-of a new screenshot. Finishing a reopened capture replaces its shelf entry.
+of a new screenshot. No annotation, Copy, Save, or pin action is required: the
+shot remains available after its floating preview expires or closes. Dismissing
+the editor with `Esc` also remembers its current edits. Editing the same shot
+updates its existing entry; cancelling before selecting a capture adds nothing.
 
 ### Theme
 

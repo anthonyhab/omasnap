@@ -44,6 +44,14 @@ snapshot or returning edits to an existing pin. Each render runs off the UI thre
 [threading.md](threading.md)), and writes the result. Until one of those
 happens, everything remains a log entry you can undo.
 
+Every completed capture also keeps a private source, operation log, and rendered
+thumbnail in the five-entry recents shelf, including untouched timed previews,
+quick output, explicit pins, and editors dismissed with `Esc`. Preview expiry
+only removes the runtime preview. The next overlay can reopen its recent card
+directly for annotation. A capture identity survives preview editing and editor
+handoffs so completing it again updates one entry and retains editable layers.
+Shelf writes, thumbnail rendering, and pruning run on the completion worker.
+
 Opening a pin for annotation leaves its compositor window in place. A private
 copy retains the pristine source and operation log; `Esc` commits any text draft,
 dismisses the annotator, and updates the pin's rendered preview. Reopening reads

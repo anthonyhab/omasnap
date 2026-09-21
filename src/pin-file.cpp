@@ -2,6 +2,7 @@
 #include "pin-file.hpp"
 
 #include "capture.hpp"
+#include "recent-snaps.hpp"
 
 #include <QDir>
 #include <QFile>
@@ -54,8 +55,20 @@ bool PinSnapshotFile::isOwnedPath(const QString &path) {
 void PinSnapshotFile::preserveForEditor() { preserve_ = true; }
 
 std::shared_ptr<PinSnapshotFile> copyPinDocument(const QString &path, QString &error) {
+  OperationLog log;
+  const QString sidecar = operationLogPath(path);
+  if (QFile::exists(sidecar) && !loadOperationLog(sidecar, log, error))
+    return {};
+  // The visible PNG is flattened. If its capture is still on the shelf,
+  // restore the working document so editing a preview retains its layers too.
+  QString source = path;
+  if (const auto recent = findRecentSnap(log.recentId)) {
+    if (!loadOperationLog(recent->logPath, log, error))
+      return {};
+    source = recent->sourcePath;
+  }
   const QString copy = pinnedSnapshotPath(1);
-  if (copy.isEmpty() || !QFile::copy(path, copy)) {
+  if (copy.isEmpty() || !QFile::copy(source, copy)) {
     error = QStringLiteral("Could not retain the pinned capture for editing");
     return {};
   }
@@ -69,10 +82,7 @@ std::shared_ptr<PinSnapshotFile> copyPinDocument(const QString &path, QString &e
     error = QStringLiteral("Could not make the pinned document private");
     return {};
   }
-  OperationLog log;
-  const QString sidecar = operationLogPath(path);
-  if ((QFile::exists(sidecar) && !loadOperationLog(sidecar, log, error)) ||
-      !saveOperationLog(operationLogPath(copy), log, error))
+  if (!saveOperationLog(operationLogPath(copy), log, error))
     return {};
   return document;
 }

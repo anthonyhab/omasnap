@@ -7,6 +7,9 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QSaveFile>
+#include <QLockFile>
+#include <QRegularExpression>
+#include <QUuid>
 #include <QStandardPaths>
 #include <QLatin1StringView>
 #include <QStringList>
@@ -15,7 +18,7 @@
 
 namespace {
 // Entries are named by a zero-padded millisecond stamp so a plain name sort is
-// a time sort: <stamp>.png (source), <stamp>.json (log), <stamp>.thumb.png.
+// a time sort. The capture identity groups repeated edits of the same shot.
 constexpr QLatin1StringView kThumbSuffix(".thumb.png");
 
 QString entryStem() {
@@ -31,20 +34,16 @@ RecentSnap snapForStem(const QDir &dir, const QString &stem) {
   RecentSnap snap;
   snap.sourcePath = dir.filePath(stem + QStringLiteral(".png"));
   snap.thumbPath = dir.filePath(stem + kThumbSuffix);
-  snap.stampMs = stem.toLongLong();
+  snap.stampMs = stem.section(QLatin1Char('-'), 0, 0).toLongLong();
   const QString log = dir.filePath(stem + QStringLiteral(".json"));
   if (QFile::exists(log))
     snap.logPath = log;
   return snap;
 }
 
-bool moveFile(const QString &from, const QString &to) {
-  if (QFile::rename(from, to))
-    return true;
-  if (!QFile::copy(from, to))
-    return false;
-  QFile::remove(from);
-  return true;
+bool validRecentId(const QString &id) {
+  static const QRegularExpression pattern(QStringLiteral("^[0-9a-f]{32}$"));
+  return pattern.match(id).hasMatch();
 }
 
 QStringList thumbNamesNewestFirst(const QDir &dir) {
@@ -93,10 +92,27 @@ QVector<RecentSnap> listRecentSnaps(bool loadThumbnails) {
   return snaps;
 }
 
-bool recordRecentSnap(const QString &sourcePath, const QString &logPath,
+std::optional<RecentSnap> findRecentSnap(const QString &recentId) {
+  if (!validRecentId(recentId))
+    return std::nullopt;
+  for (const RecentSnap &snap : listRecentSnaps(false)) {
+    if (snap.thumbPath.endsWith(QLatin1Char('-') + recentId + kThumbSuffix))
+      return snap;
+  }
+  return std::nullopt;
+}
+
+bool recordRecentSnap(const QImage &source, const OperationLog &log,
                       const QImage &rendered, QString &error) {
-  if (rendered.isNull() || sourcePath.isEmpty() || !QFile::exists(sourcePath)) {
+  if (rendered.isNull() || source.isNull()) {
     error = QStringLiteral("Nothing to remember: no working document");
+    return false;
+  }
+  OperationLog savedLog = log;
+  if (savedLog.recentId.isEmpty())
+    savedLog.recentId = QUuid::createUuid().toString(QUuid::Id128);
+  if (!validRecentId(savedLog.recentId)) {
+    error = QStringLiteral("Invalid recent capture identity");
     return false;
   }
   const QString root = recentSnapsDirectory();
@@ -105,13 +121,32 @@ bool recordRecentSnap(const QString &sourcePath, const QString &logPath,
     return false;
   }
   const QDir dir(root);
+  QLockFile lock(dir.filePath(QStringLiteral(".record.lock")));
+  if (!lock.tryLock(5000)) {
+    error = QStringLiteral("Could not lock the recent captures directory");
+    return false;
+  }
   QString stem = entryStem();
-  while (QFile::exists(dir.filePath(stem + kThumbSuffix)))
+  const QString suffix = QLatin1Char('-') + savedLog.recentId;
+  while (QFile::exists(dir.filePath(stem + suffix + kThumbSuffix)))
     stem = QStringLiteral("%1").arg(stem.toLongLong() + 1, 16, 10, QChar('0'));
-  const RecentSnap snap = snapForStem(dir, stem);
+  const RecentSnap snap = snapForStem(dir, stem + suffix);
 
-  // Thumbnail first: listing keys off it, and the move of the source (a
-  // rename within the same filesystem, normally) is the cheap part.
+  // Publish the thumbnail last: readers never see a half-written document.
+  // Keep the previous entry until its replacement is completely ready.
+  QSaveFile sourceFile(snap.sourcePath);
+  sourceFile.setDirectWriteFallback(false);
+  if (!sourceFile.open(QIODevice::WriteOnly) ||
+      !sourceFile.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner) ||
+      !source.save(&sourceFile, "PNG") || !sourceFile.commit()) {
+    error = QStringLiteral("Could not write recent capture source: %1")
+                .arg(sourceFile.errorString());
+    return false;
+  }
+  if (!saveOperationLog(operationLogPath(snap.sourcePath), savedLog, error)) {
+    removeRecentSnap(snap);
+    return false;
+  }
   const QImage thumb = rendered.scaled(kRecentThumbEdge, kRecentThumbEdge,
                                        Qt::KeepAspectRatio,
                                        Qt::SmoothTransformation);
@@ -123,15 +158,14 @@ bool recordRecentSnap(const QString &sourcePath, const QString &logPath,
       !thumb.save(&thumbFile, "PNG") || !thumbFile.commit()) {
     error = QStringLiteral("Could not write recent capture thumbnail: %1")
                 .arg(thumbFile.errorString());
+    removeRecentSnap(snap);
     return false;
   }
-  if (!moveFile(sourcePath, snap.sourcePath)) {
-    QFile::remove(snap.thumbPath);
-    error = QStringLiteral("Could not move working document into %1").arg(root);
-    return false;
+
+  for (const QString &name : dir.entryList({QStringLiteral("*") + suffix + kThumbSuffix}, QDir::Files)) {
+    if (dir.filePath(name) != snap.thumbPath)
+      removeRecentSnap(snapForStem(dir, stemOf(name)));
   }
-  if (!logPath.isEmpty() && QFile::exists(logPath))
-    moveFile(logPath, dir.filePath(stem + QStringLiteral(".json")));
 
   const QStringList names = thumbNamesNewestFirst(dir);
   for (qsizetype index = kRecentSnapLimit; index < names.size(); ++index)

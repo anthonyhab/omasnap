@@ -7,6 +7,9 @@
 #include <QImage>
 #include <QString>
 #include <QVector>
+#include <optional>
+
+struct OperationLog;
 
 struct RecentSnap {
   /// Full-resolution source the editor reopens.
@@ -33,11 +36,14 @@ constexpr int kRecentThumbEdge = 320;
 /// `loadThumbnails` is set.
 [[nodiscard]] QVector<RecentSnap> listRecentSnaps(bool loadThumbnails = true);
 
-/// Adopts a working document (moving `sourcePath` and `logPath` into the
-/// shelf) and stores a thumbnail of `rendered`. Prunes beyond the limit.
-[[nodiscard]] bool recordRecentSnap(const QString &sourcePath,
-                                    const QString &logPath,
+/// Saves a working document and thumbnail on a worker. Replaces an entry with
+/// the same log.recentId and prunes beyond the limit; never consumes live files.
+[[nodiscard]] bool recordRecentSnap(const QImage &source,
+                                    const OperationLog &log,
                                     const QImage &rendered, QString &error);
+
+/// Finds the working document behind a preview, while it remains on the shelf.
+[[nodiscard]] std::optional<RecentSnap> findRecentSnap(const QString &recentId);
 
 /// Deletes one entry's files.
 void removeRecentSnap(const RecentSnap &snap);

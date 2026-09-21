@@ -2503,6 +2503,81 @@ bool runPostCaptureChecks(QString &error) {
                   .arg(static_cast<int>(mode));
       return false;
     }
+    const auto recent = findRecentSnap(log.recentId);
+    const auto listed = listRecentSnaps(false);
+    if (!recent || listed.isEmpty() ||
+        listed.constFirst().sourcePath != recent->sourcePath) {
+      error = QStringLiteral("An untouched capture was not the newest recent shot");
+      return false;
+    }
+    // The temporary preview's last owner deletes it on close or expiry.
+    // Its independent recent entry must still reopen the exact native crop.
+    {
+      PinSnapshotFile preview(pin);
+      if (!preview.isLocked())
+        return false;
+    }
+    if (QFile::exists(pin) || !QFile::exists(recent->sourcePath)) {
+      error = QStringLiteral("Preview expiry removed its recent capture");
+      return false;
+    }
+    CaptureEditor next(capture, Mode::Region, QuickOutputMode::CopyAndPreview);
+    next.resize(800, 600);
+    next.show();
+    if (!next.waitForRecents()) {
+      error = QStringLiteral("The normal capture overlay did not offer recent shots");
+      return false;
+    }
+    // Move off the stack first: Qt's offscreen backend can otherwise elide
+    // the move when successive overlays put a card at the same global point.
+    QTest::mouseMove(&next, QPoint(100, 100), 20);
+    QCoreApplication::processEvents();
+    QTest::mouseMove(&next, next.recentCardRectForTest(0).center().toPoint(), 20);
+    if (!QTest::qWaitFor([&] { return next.recentsOpenForTest(); }, 1000)) {
+      error = QStringLiteral("The recent shots did not fan out on hover (mode %1)").arg(static_cast<int>(mode));
+      return false;
+    }
+    QTest::mouseClick(&next, Qt::LeftButton, Qt::NoModifier,
+                      next.recentCardRectForTest(0).center().toPoint());
+    next.waitForReopen();
+    if (!next.editingForTest() || next.exportingForTest() ||
+        next.renderCurrentOutput().convertToFormat(expected.format()) != expected) {
+      error = QStringLiteral("The newest card did not reopen the expired preview for annotation: mode %1, edit %2, export %3, actual %4x%5, expected %6x%7, cards %8")
+                  .arg(static_cast<int>(mode)).arg(next.editingForTest()).arg(next.exportingForTest())
+                  .arg(next.renderCurrentOutput().width()).arg(next.renderCurrentOutput().height())
+                  .arg(expected.width()).arg(expected.height()).arg(next.recentCountForTest());
+      return false;
+    }
+    const qsizetype count = listed.size();
+    const QImage clipboardBefore(clipboard);
+    QTest::keyClick(&next, Qt::Key_A);
+    const QRectF frame = next.sourceFrameWidgetRectForTest();
+    QTest::mousePress(&next, Qt::LeftButton, Qt::NoModifier,
+                      (frame.topLeft() + QPointF(frame.width() * .2, frame.height() * .2)).toPoint());
+    QTest::mouseRelease(&next, Qt::LeftButton, Qt::NoModifier,
+                        (frame.topLeft() + QPointF(frame.width() * .7, frame.height() * .7)).toPoint());
+    QTest::keyClick(&next, Qt::Key_Escape);
+    if (!QTest::qWaitFor([&] { return !next.isVisible(); }, 5000)) {
+      error = QStringLiteral("Esc did not remember the capture without copying or saving");
+      return false;
+    }
+    OperationLog editedLog;
+    const auto edited = findRecentSnap(log.recentId);
+    if (!edited || listRecentSnaps(false).size() != count ||
+        !loadOperationLog(edited->logPath, editedLog, error) ||
+        QImage(clipboard) != clipboardBefore ||
+        next.annotationCountForTest() != 1) {
+      error = QStringLiteral("Editing a recent shot duplicated it, lost its layer, or copied on Esc");
+      return false;
+    }
+    CaptureData restored;
+    describeFileCapture(restored, QImage(edited->sourcePath), editedLog);
+    CaptureEditor reopened(restored, Mode::File, QuickOutputMode::None, editedLog);
+    if (reopened.annotationCountForTest() != 1 ||
+        reopened.renderCurrentOutput() != next.renderCurrentOutput()) {
+      error = QStringLiteral("The recent capture did not retain its editable annotation");
+      return false;
+    }
   }
   // Both picker shortcuts keep every capture kind in the editor without
   // copying or launching a preview. Holding the key must not toggle it off.
@@ -2763,6 +2838,27 @@ bool runPostCaptureChecks(QString &error) {
       error = QStringLiteral("Ctrl+P did not keep the capture or lost its text draft");
       return false;
     }
+    const auto document = copyPinDocument(pin, error);
+    OperationLog log;
+    if (!document || !loadOperationLog(operationLogPath(document->path()), log, error) ||
+        !findRecentSnap(log.recentId)) {
+      error = QStringLiteral("Explicit pinning did not retain a recent document");
+      return false;
+    }
+    CaptureData restored;
+    describeFileCapture(restored, QImage(document->path()), log);
+    CaptureEditor pinnedEditor(restored, Mode::File, QuickOutputMode::None, log);
+    pinnedEditor.setPinDocument(document);
+    pinnedEditor.show();
+    const qsizetype count = listRecentSnaps(false).size();
+    QTest::keyClick(&pinnedEditor, Qt::Key_Escape);
+    if (!QTest::qWaitFor([&] { return !pinnedEditor.isVisible(); }, 5000) ||
+        pinnedEditor.annotationCountForTest() != editor.annotationCountForTest() ||
+        pinnedEditor.renderCurrentOutput() != editor.renderCurrentOutput() ||
+        listRecentSnaps(false).size() != count) {
+      error = QStringLiteral("Editing a pin flattened its layers or duplicated its recent entry");
+      return false;
+    }
   }
   // Failures preserve the captured pixels in an editable recovery surface
   // and leave no abandoned pin document. Clipboard failure never launches.
@@ -2808,7 +2904,7 @@ bool runQuickOutputChecks(QString &error) {
   const QByteArray previousDir = qgetenv("OMASNAP_SCREENSHOT_DIR");
   qputenv("OMASNAP_SCREENSHOT_DIR", directory.path().toUtf8());
   outputError.clear();
-  const bool saved = quickOutput(image, QuickOutputMode::Save, outputError);
+  const bool saved = quickOutput(image, QuickOutputMode::Save, outputError, QSize(16, 12));
   const QStringList files =
       QDir(directory.path()).entryList({QStringLiteral("*.png")}, QDir::Files);
   if (previousDir.isEmpty())
@@ -2819,6 +2915,15 @@ bool runQuickOutputChecks(QString &error) {
       QImage(QDir(directory.path()).filePath(files.constFirst())).isNull() ||
       QFile::exists(temporarySnapshotPath())) {
     error = QStringLiteral("quickOutput did not save exactly one PNG");
+    return false;
+  }
+  const auto recents = listRecentSnaps(false);
+  OperationLog log;
+  if (recents.isEmpty() ||
+      !loadOperationLog(recents.constFirst().logPath, log, error) ||
+      log.previewSize != QSize(16, 12) ||
+      QImage(recents.constFirst().sourcePath).convertToFormat(image.format()) != image) {
+    error = QStringLiteral("Instant fullscreen output was not remembered at its native scale");
     return false;
   }
   return true;
@@ -3054,7 +3159,8 @@ bool runCrashSnapshotChecks(const CaptureData &capture, QString &error) {
     annotate(quitEditor);
     QTest::keyClick(&quitEditor, Qt::Key_Escape);
     QCoreApplication::processEvents();
-    if (!settleUntilWritten() || quitEditor.isVisible()) {
+    if (!settleUntilWritten() ||
+        !QTest::qWaitFor([&] { return !quitEditor.isVisible(); }, 5000)) {
       error = QStringLiteral("Editing before a quit left no snapshot to clean");
       return false;
     }
@@ -4478,7 +4584,7 @@ bool runTextEnterSemanticsCheck(QApplication &application, QString &error) {
     error = QStringLiteral("Esc did not commit the label and keep it selected");
     return false;
   }
-  if (editor.isVisible()) {
+  if (!QTest::qWaitFor([&] { return !editor.isVisible(); }, 5000)) {
     error = QStringLiteral("Esc while typing did not dismiss the annotator");
     return false;
   }
@@ -4493,6 +4599,10 @@ bool runTextEnterSemanticsCheck(QApplication &application, QString &error) {
     return false;
   }
   QTest::keyClick(inlineEditor(), Qt::Key_Escape);
+  if (!QTest::qWaitFor([&] { return !editor.isVisible(); }, 5000)) {
+    error = QStringLiteral("Esc did not finish remembering the edited label");
+    return false;
+  }
   editor.show();
   application.processEvents();
   QTest::keyClick(&editor, Qt::Key_Backspace);
@@ -5710,6 +5820,25 @@ bool runRecentsShelfSmoke(QApplication &application, QString &error) {
     editor.close();
   }
 
+  // Opening annotation and dismissing it without any edits or output still
+  // completes a capture. Cancelling the empty picker above added nothing.
+  {
+    CaptureEditor untouched(capture, CaptureEditor::CaptureMode::Fullscreen);
+    untouched.show();
+    QTest::keyClick(&untouched, Qt::Key_Escape);
+    if (!QTest::qWaitFor([&] { return !untouched.isVisible(); }, 5000)) {
+      error = QStringLiteral("Could not dismiss an untouched capture");
+      return false;
+    }
+  }
+  const auto untouched = listRecentSnaps(false);
+  if (untouched.size() != 1 ||
+      QImage(untouched.constFirst().sourcePath).convertToFormat(capture.source.format()) != capture.source) {
+    error = QStringLiteral("An untouched capture was not remembered, or cancelling a selection was");
+    return false;
+  }
+  removeRecentSnap(untouched.constFirst());
+
   // Take a capture with a layer on it and save: the working document should
   // land on the shelf with a thumbnail and a log that knows its preview size.
   QImage firstOutput;
@@ -5853,10 +5982,8 @@ bool runRecentsShelfSmoke(QApplication &application, QString &error) {
 
   // The shelf holds the newest five and no more.
   for (int index = 0; index < kRecentSnapLimit + 2; ++index) {
-    const QString source = temporarySnapshotPath();
     QString saveError;
-    if (!saveTemporarySnapshot(capture.source, source, saveError, 100) ||
-        !recordRecentSnap(source, {}, capture.source, saveError)) {
+    if (!recordRecentSnap(capture.source, {}, capture.source, saveError)) {
       error = QStringLiteral("Could not fill the shelf: %1").arg(saveError);
       return false;
     }
@@ -13398,8 +13525,7 @@ int main(int argc, char **argv) {
   QTest::mouseMove(&editor, QPoint(400, 312), 20);
   QTest::keyClick(&editor, Qt::Key_T);
   QTest::keyClick(&editor, Qt::Key_Escape);
-  application.processEvents();
-  if (editor.isVisible())
+  if (!QTest::qWaitFor([&] { return !editor.isVisible(); }, 5000))
     return 24;
 
   QString savedPath;

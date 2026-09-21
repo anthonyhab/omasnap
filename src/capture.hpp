@@ -145,6 +145,8 @@ struct OperationLog {
   /// coordinates live in that space, so a source captured on a scaled
   /// monitor reopens at the same scale. Invalid when unknown.
   QSize previewSize;
+  /// Identity shared by a capture's recent entry, preview, and editor handoffs.
+  QString recentId = {};
 
   bool operator==(const OperationLog &) const = default;
 };
@@ -298,7 +300,7 @@ void describeFileCapture(CaptureData &capture, QImage image,
 [[nodiscard]] bool copyPngFileToClipboard(const QString &path, QString &error);
 [[nodiscard]] bool copyImageToClipboard(const QImage &image, QString &error);
 [[nodiscard]] bool quickOutput(const QImage &image, QuickOutputMode mode,
-                               QString &error);
+                               QString &error, const QSize &logicalSize = {});
 [[nodiscard]] bool copyTextToClipboard(const QString &text, QString &error);
 /** Paints one annotation. `arrowDisplayScale` affects only the on-screen tail
  *  legibility floor for Standard/Pointy arrows; exports use the default 1.0. */
@@ -427,14 +429,16 @@ bool removeEditorHandoff(const QString &path, const QString &token);
 /** Saves a pinned snapshot plus a sidecar log recording the logical size,
  *  so editing the pin later reopens at the captured scale. */
 [[nodiscard]] bool savePinnedSnapshot(const QImage &image, const QString &path,
-                                      const QSize &logicalSize, QString &error);
+                                      const QSize &logicalSize, QString &error,
+                                      const QString &recentId = {});
 /** Saves and launches a private pin, optionally copying the same PNG first.
  *  Call on a worker: encoding, clipboard verification and process launch block.
  *  Returns the owned snapshot path, or removes it on failure. */
 [[nodiscard]] QString launchPinnedCapture(
     const QImage &image, const QSize &logicalSize, bool copy,
     PinLifetime lifetime, QString &error,
-    const std::function<bool(const QString &, const QStringList &)> &launcher = {});
+    const std::function<bool(const QString &, const QStringList &)> &launcher = {},
+    const QString &recentId = {});
 [[nodiscard]] bool saveTemporarySnapshot(const QImage &image, QString path,
                                          QString &error, int quality = -1);
 [[nodiscard]] QString recognizeText(const QImage &image, QString &error);

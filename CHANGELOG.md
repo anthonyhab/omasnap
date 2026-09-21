@@ -18,6 +18,9 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 
 ### Changed
 
+- Remember the latest five completed captures even after their previews expire,
+  without requiring annotation, copying, saving, or pinning. Recent cards always
+  reopen for annotation, and further edits update the same entry.
 - Keep a subtle dotted image boundary visible with every tool, with crop handles
   available only in Select mode when no annotation is selected.
 - Framed canvas growth keeps 15 px of mat beyond a layer that outgrows the

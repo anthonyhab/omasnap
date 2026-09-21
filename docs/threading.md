@@ -28,12 +28,18 @@ reading its corresponding worker:
 |---|---|
 | `captureWatcher_` | Reads window/monitor pixels via `captureMonitorPixels` |
 | `ocrWatcher_` | Renders the OCR crop and runs `tesseract` |
-| `finishWatcher_` | Renders the export, encodes PNG, does the clipboard round trip, moves the file |
+| `finishWatcher_` | Renders the export, records the recent document, encodes PNG, does the clipboard round trip, moves the file |
 | `snapshotWatcher_` | Writes the crash-recovery working snapshot + operation log |
-| `pinWatcher_` | Renders the image for a pinned compositor window |
+| `pinWatcher_` | Renders and records the capture, then launches a pinned compositor window |
 | `recentsWatcher_` | Lists and decodes thumbnails for the recents shelf |
 | `backdropWatcher_` | Decodes an optional user-supplied backdrop image |
 | `highlighterProbeWatcher_` | Detects a nearby screenshot text row for highlighter Snap mode |
+
+Editor dismissal also uses a worker, tracked by `dismissFuture_`, to retain the
+recent document and return edits to an originating pin. Recent source/log/thumbnail
+writes and pruning happen entirely on these workers. The thumbnail is published
+last, after the source and log are ready, and writers serialize with a shelf lock.
+No full-resolution file is moved or PNG-encoded in the completion signal handler.
 
 `src/scroll-capture.cpp` follows the same rule with a plain `QFuture<void>`:
 the capture loop (grab → crop → classify → accumulate) runs on a worker

@@ -3,6 +3,7 @@
 #include <QTextOption>
 #include "capture.hpp"
 #include "pin-file.hpp"
+#include "recent-snaps.hpp"
 #include "stroke-smoothing.hpp"
 #include "output-config.hpp"
 #include "startup-timing.hpp"
@@ -1663,12 +1664,18 @@ bool copyImageToClipboard(const QImage &image, QString &error) {
   return copyToWaylandClipboard(QStringLiteral("image/png"), png, error);
 }
 
-bool quickOutput(const QImage &image, QuickOutputMode mode, QString &error) {
+bool quickOutput(const QImage &image, QuickOutputMode mode, QString &error,
+                 const QSize &logicalSize) {
   if (image.isNull() || mode == QuickOutputMode::None ||
       mode == QuickOutputMode::CopyAndPreview) {
     error = QStringLiteral("Could not prepare screenshot snapshot");
     return false;
   }
+  OperationLog log;
+  log.previewSize = logicalSize.isEmpty() ? image.size() : logicalSize;
+  QString recentError;
+  if (!recordRecentSnap(image, log, image, recentError))
+    qWarning().noquote() << recentError;
   if (mode == QuickOutputMode::Copy) {
     if (!copyImageToClipboard(image, error))
       return false;
@@ -1890,7 +1897,8 @@ QSize editorWindowSize(const QSize &preview, const QSize &available,
 }
 
 bool savePinnedSnapshot(const QImage &image, const QString &path,
-                        const QSize &logicalSize, QString &error) {
+                        const QSize &logicalSize, QString &error,
+                        const QString &recentId) {
   if (!saveTemporarySnapshot(image, path, error))
     return false;
   // The snapshot holds device pixels; the sidecar records the logical size
@@ -1899,6 +1907,7 @@ bool savePinnedSnapshot(const QImage &image, const QString &path,
   // image blown up.
   OperationLog sidecar;
   sidecar.previewSize = logicalSize;
+  sidecar.recentId = recentId;
   if (!logicalSize.isEmpty() &&
       !saveOperationLog(operationLogPath(path), sidecar, error)) {
     QFile::remove(path);
@@ -1910,14 +1919,15 @@ bool savePinnedSnapshot(const QImage &image, const QString &path,
 QString launchPinnedCapture(
     const QImage &image, const QSize &logicalSize, bool copy,
     PinLifetime lifetime, QString &error,
-    const std::function<bool(const QString &, const QStringList &)> &launcher) {
+    const std::function<bool(const QString &, const QStringList &)> &launcher,
+    const QString &recentId) {
   prunePinnedSnapshots();
   const QString path = pinnedSnapshotPath(1);
   if (path.isEmpty()) {
     error = QStringLiteral("Could not create private runtime directory");
     return {};
   }
-  if (!savePinnedSnapshot(image, path, logicalSize, error))
+  if (!savePinnedSnapshot(image, path, logicalSize, error, recentId))
     return {};
   const auto cleanup = [&] {
     QFile::remove(path);
@@ -2452,6 +2462,8 @@ bool saveOperationLog(const QString &path, const OperationLog &log,
   root.insert(QStringLiteral("index"), log.index);
   root.insert(QStringLiteral("nextId"), QString::number(log.nextId));
   root.insert(QStringLiteral("nextMarker"), log.nextMarker);
+  if (!log.recentId.isEmpty())
+    root.insert(QStringLiteral("recentId"), log.recentId);
   if (log.previewSize.isValid()) {
     root.insert(QStringLiteral("previewWidth"), log.previewSize.width());
     root.insert(QStringLiteral("previewHeight"), log.previewSize.height());
@@ -2498,6 +2510,7 @@ bool loadOperationLog(const QString &path, OperationLog &log, QString &error) {
   loaded.index = root.value(QStringLiteral("index")).toInt();
   loaded.nextId = root.value(QStringLiteral("nextId")).toString().toULongLong();
   loaded.nextMarker = root.value(QStringLiteral("nextMarker")).toInt(1);
+  loaded.recentId = root.value(QStringLiteral("recentId")).toString();
   loaded.previewSize =
       QSize(root.value(QStringLiteral("previewWidth")).toInt(),
             root.value(QStringLiteral("previewHeight")).toInt());
