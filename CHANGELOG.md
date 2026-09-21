@@ -14,6 +14,8 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 
 ### Changed
 
+- Keep a subtle dotted image boundary visible with every tool, with crop handles
+  available only in Select mode when no annotation is selected.
 - Framed canvas growth keeps 15 px of mat beyond a layer that outgrows the
   normal frame, so an arrow or label no longer ends flush against the edge.
 - A label typed outside the image grows the canvas as soon as its caret is
