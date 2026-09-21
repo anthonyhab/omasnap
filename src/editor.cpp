@@ -2096,9 +2096,16 @@ QRectF CaptureEditor::baseImageRect() const {
   const qreal bottom = windowedPresentation_ ? 64 : 58;
   const QRectF available(side, top, std::max<qreal>(1, width() - 2 * side),
                          std::max<qreal>(1, height() - top - bottom));
+  // Fit the full exported frame, while keeping image/layer coordinates tied
+  // to the source. A grown canvas already includes its backdrop margin.
+  const qreal margin = !canvasGrown() && hasCaptureBackground() &&
+                               canvasBoundaryMode_ == CanvasBoundaryMode::Framed
+                           ? kBackdropMargin
+                           : 0.0;
+  const QSizeF framedSize = canvasRect_.size() + QSizeF(2 * margin, 2 * margin);
   const qreal scale =
-      std::min<qreal>({1.0, available.width() / canvasRect_.width(),
-                       available.height() / canvasRect_.height()});
+      std::min<qreal>({1.0, available.width() / framedSize.width(),
+                       available.height() / framedSize.height()});
   const QSizeF shown = canvasRect_.size() * scale;
   // Snapped to the pixel grid: centering can land the origin on a half
   // pixel, which is needless blur at scale 1 (the common case, an
@@ -2720,6 +2727,13 @@ BackgroundStyle CaptureEditor::effectiveBackgroundStyle() const {
       backgroundStyle_ == BackgroundStyle::None;
   return automaticFramedBackground ? BackgroundStyle::Slate
                                    : backgroundStyle_;
+}
+
+bool CaptureEditor::hasCaptureBackground() const {
+  const BackgroundStyle background = effectiveBackgroundStyle();
+  return background != BackgroundStyle::None &&
+         background != BackgroundStyle::Off &&
+         (background != BackgroundStyle::Custom || !customBackdrop_.isNull());
 }
 
 void CaptureEditor::applyEditState(const EditState &state) {
@@ -6807,12 +6821,10 @@ void CaptureEditor::paintEdit(QPainter &painter) {
   const QRectF visibleSourceImage = sourceImage.intersected(visibleImage);
   const bool grown = canvasGrown();
   const BackgroundStyle background = effectiveBackgroundStyle();
-  const bool hasBackground =
-      background != BackgroundStyle::None &&
-      background != BackgroundStyle::Off &&
-      (background != BackgroundStyle::Custom || !customBackdrop_.isNull());
+  const bool hasBackground = hasCaptureBackground();
   const bool framedBackground =
       hasBackground && canvasBoundaryMode_ == CanvasBoundaryMode::Framed;
+  const qreal imageScale = editScale();
   if (imageShadow_ && opaqueBackdrop && !hasBackground && !visibleSourceImage.isEmpty()) {
     // Two shadows, the macOS model: a tight even ambient halo that sits
     // the source card on the mat, and a wider key shadow offset downward.
@@ -6844,21 +6856,22 @@ void CaptureEditor::paintEdit(QPainter &painter) {
     painter.save();
     painter.setClipRect(editViewportRect());
   }
-  if (grown) {
-    // Extension is the canvas itself, while the source remains the image card
-    // floating above it. Never shadow the expanded canvas edge.
-    paintCaptureBackground(painter, image, background, customBackdrop_);
-    if (imageShadow_ && hasBackground)
-      paintCaptureImageShadow(painter, sourceImage);
-  } else if (framedBackground) {
-    const QRectF backing = image.adjusted(-28, -28, 28, 28);
+  if (grown || framedBackground) {
+    // Paint the same frame as export at the current view scale. Expanded
+    // canvases already contain the mat; only the source card gets a shadow.
+    const qreal margin = grown ? 0.0 : kBackdropMargin * imageScale;
+    const QRectF backing = image.adjusted(-margin, -margin, margin, margin);
+    painter.save();
+    painter.setClipRect(backing, Qt::IntersectClip);
     paintCaptureBackground(painter, backing, background, customBackdrop_);
-    if (imageShadow_)
-      paintCaptureImageShadow(painter, image);
+    if (imageShadow_ && hasBackground)
+      paintCaptureImageShadow(painter, sourceImage, imageScale, imageScale);
+    painter.restore();
   }
 
   QPainterPath clip;
-  const qreal sourceRadius = !grown && framedBackground ? 10.0 : 0.0;
+  const qreal sourceRadius =
+      !grown && framedBackground ? kCaptureImageRadius * imageScale : 0.0;
   clip.addRoundedRect(sourceImage, sourceRadius, sourceRadius);
   const QSize targetSize(qRound(sourceImage.width() * devicePixelRatioF()),
                          qRound(sourceImage.height() * devicePixelRatioF()));

@@ -594,6 +594,7 @@ private:
   void refreshCanvasRect();
   [[nodiscard]] bool canvasGrown() const;
   [[nodiscard]] BackgroundStyle effectiveBackgroundStyle() const;
+  [[nodiscard]] bool hasCaptureBackground() const;
   void enterEdit(QString status);
   /// Routes a confirmed screen selection to quick export or the editor.
   void enterSelectedCapture(QString editStatus);
