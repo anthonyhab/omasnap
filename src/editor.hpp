@@ -31,6 +31,7 @@ class QWheelEvent;
 class QPainter;
 
 class InlineTextEdit;
+class ShortcutGuide;
 class ScrollCapturePanel;
 class PinSnapshotFile;
 namespace LayerShellQt {
@@ -475,6 +476,7 @@ private:
   /// Top of the toolbar row: just under the tab strip's fixed bottom edge,
   /// independent of the image, so the two can never overlap.
   [[nodiscard]] QSizeF windowLegendSize() const;
+  [[nodiscard]] QVector<QPair<QString, QString>> captureHotkeyEntries() const;
   mutable int legendWidth_ = -1;
   mutable QSizeF legendSize_;
   [[nodiscard]] qreal toolbarTop() const;
@@ -710,6 +712,7 @@ private:
   QSize pristineLogicalSize_;
   QVector<CutOp> cuts_;
   bool windowedPresentation_ = false;
+  ShortcutGuide *shortcutGuide_ = nullptr;
   std::function<bool(const QString &, const QStringList &)> processLauncher_;
   bool windowedHandoffOnEdit_ = false;
   bool windowedBackdropOpaque_ = true;
