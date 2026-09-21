@@ -949,8 +949,7 @@ protected:
       endStackDrag();
       return;
     }
-    if (!dragMoved_ && rect != dragStartRect_)
-      dragMoved_ = true;
+    recordDragMovement(rect);
     if (dragMoved_)
       previewInsertion(rect);
     const bool still = rect == dragPreviousRect_;
@@ -1051,7 +1050,8 @@ protected:
     // One last look at the true final position; the last poll can be a
     // frame behind it.
     const QRect rect = ownCompositorRect();
-    if (!dragMoved_ && rect == dragStartRect_) {
+    recordDragMovement(rect);
+    if (!dragMoved_) {
       endStackDrag();
       return;
     }
@@ -1446,6 +1446,15 @@ protected:
   }
 
 private:
+  void recordDragMovement(const QRect &rect) {
+    if (dragMoved_ || rect.isEmpty() || rect == dragStartRect_)
+      return;
+    dragMoved_ = true;
+    // Moving a preview expresses intent to keep it, even within the stack.
+    // A click or arming the compositor drag watch alone does not pin it.
+    expiry_.setKept(true);
+  }
+
   void updateExpiryPause() {
     expiry_.setPaused(closing_ || hovered_ || stackInteracting_ || actionPending_ ||
                       fileDragActive_ || dragWatchTimer_.isActive() ||

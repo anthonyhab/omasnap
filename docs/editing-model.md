@@ -33,7 +33,8 @@ image as you draw.** Add a rectangle, change your mind, delete it — the
 source pixels underneath were never touched.
 
 Completing a fresh capture copies it and shows a timed preview by default. The
-preview fades after 10 seconds of idle time; its pin button or Ctrl+P keeps it.
+preview fades after 10 seconds of idle time; its pin button, Ctrl+P, or moving the
+preview keeps it, including a drag that only reorders the stack.
 `--editor overlay` or `--editor window` opens annotation before output; a pin's
 Edit button also opens the editor on demand. During editing, output happens on **Copy**,
 **Save**, or both together (`CaptureEditor::finish()`), plus pinning a
