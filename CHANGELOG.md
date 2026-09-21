@@ -24,6 +24,8 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 
 ### Fixed
 
+- Show capture crosshair guides and the correct hovered window on pointer entry,
+  without waiting for the first mouse movement.
 - Keep dashed selection outlines stable during partial repaints, including
   narrow rounded rectangles and scaled displays.
 - Match the editor's background padding, image corners, and scaled shadows to
