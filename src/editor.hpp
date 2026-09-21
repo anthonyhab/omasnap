@@ -23,6 +23,7 @@
 
 class QKeyEvent;
 class QCloseEvent;
+class QEnterEvent;
 class QMouseEvent;
 class QPaintEvent;
 class QWheelEvent;
@@ -143,6 +144,7 @@ protected:
   void closeEvent(QCloseEvent *event) override;
   void keyPressEvent(QKeyEvent *event) override;
   void keyReleaseEvent(QKeyEvent *event) override;
+  void enterEvent(QEnterEvent *event) override;
   void leaveEvent(QEvent *event) override;
   void mouseMoveEvent(QMouseEvent *event) override;
   void mouseDoubleClickEvent(QMouseEvent *event) override;

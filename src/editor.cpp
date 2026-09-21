@@ -27,6 +27,7 @@
 #include <QDateTime>
 #include <QDebug>
 #include <QDir>
+#include <QEnterEvent>
 #include <QEvent>
 #include <QFile>
 #include <QFileInfo>
@@ -4576,6 +4577,27 @@ void CaptureEditor::keyReleaseEvent(QKeyEvent *event) {
     return;
   }
   QWidget::keyReleaseEvent(event);
+}
+
+void CaptureEditor::enterEvent(QEnterEvent *event) {
+  QWidget::enterEvent(event);
+  if (phase_ != Phase::Select || dragging_)
+    return;
+  const QRegion oldVisual = pointerMotionRegion(cursor_);
+  const int oldHoveredWindow = hoveredWindow_;
+  // The constructor runs before Wayland gives the overlay pointer focus.
+  // Entry carries the current local position, without needing a mouse move.
+  cursor_ = event->position();
+  if (capturePending_)
+    return;
+  trackRecentsHover();
+  if (smartMode_ || windowMode_)
+    hoveredWindow_ = recentsOpen_ ? -1 : windowAt(cursor_);
+  updatePointerCursor();
+  QRegion damage = oldVisual | pointerMotionRegion(cursor_);
+  if ((smartMode_ || windowMode_) && oldHoveredWindow != hoveredWindow_)
+    damage |= windowHoverDamage(oldHoveredWindow, hoveredWindow_);
+  update(damage);
 }
 
 void CaptureEditor::leaveEvent(QEvent *event) {

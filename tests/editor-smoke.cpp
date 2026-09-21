@@ -38,6 +38,7 @@
 #include <QDebug>
 #include <QDir>
 #include <QElapsedTimer>
+#include <QEnterEvent>
 #include <QScopeGuard>
 #include <QStandardPaths>
 #include <QThread>
@@ -458,23 +459,42 @@ bool runMeasurementReadoutCheck(QString &error) {
     return false;
   };
 
-  QTest::mouseMove(&editor, QPoint(150, 120), 20);
+  // Wayland supplies the pointer position when the overlay gains pointer
+  // focus, even if the mouse has not moved since the capture shortcut.
+  QEnterEvent enter({150, 120}, {150, 120},
+                    editor.mapToGlobal(QPoint(150, 120)));
+  QApplication::sendEvent(&editor, &enter);
   QApplication::processEvents();
-  if (!expect(QStringLiteral("300, 240"), QStringLiteral("Idle pointer")))
+  if (!expect(QStringLiteral("300, 240"), QStringLiteral("Initial pointer")))
     return false;
+  const QImage initialUi = editor.grab().toImage();
+  const auto pixel = [&](const QPoint &point) {
+    return initialUi.pixelColor(point * initialUi.devicePixelRatio());
+  };
+  if (colorNear(pixel({150, 50}), pixel({155, 50}), 3) ||
+      colorNear(pixel({40, 120}), pixel({40, 125}), 3)) {
+    error = QStringLiteral("Capture crosshair guides waited for mouse movement");
+    return false;
+  }
 
-  {
-    CaptureEditor windowEditor(capture, CaptureEditor::CaptureMode::Window);
+  for (const auto mode : {CaptureEditor::CaptureMode::Window,
+                          CaptureEditor::CaptureMode::Smart,
+                          CaptureEditor::CaptureMode::Scroll}) {
+    CaptureEditor windowEditor(capture, mode);
     windowEditor.setSuppressSnapshots(true);
     windowEditor.resize(800, 600);
     windowEditor.show();
     QApplication::processEvents();
-    QTest::mouseMove(&windowEditor, QPoint(200, 150), 20);
+    QEnterEvent windowEnter({200, 150}, {200, 150},
+                            windowEditor.mapToGlobal(QPoint(200, 150)));
+    QApplication::sendEvent(&windowEditor, &windowEnter);
     QApplication::processEvents();
-    if (windowEditor.measurementText() != QStringLiteral("600 × 440")) {
-      error = QStringLiteral("Hovered window readout was \"%1\", expected "
-                             "\"600 × 440\"")
-                  .arg(windowEditor.measurementText());
+    const QString wanted = mode == CaptureEditor::CaptureMode::Scroll
+                               ? QStringLiteral("400, 300")
+                               : QStringLiteral("600 × 440");
+    if (windowEditor.measurementText() != wanted) {
+      error = QStringLiteral("Pointer entry readout was \"%1\", expected \"%2\"")
+                  .arg(windowEditor.measurementText(), wanted);
       return false;
     }
     windowEditor.close();

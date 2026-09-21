@@ -26,7 +26,8 @@ preview keeps it on screen.
   keep it on screen.
 - A pointer-side readout that turns any drag into a ruler: the pointer position
   while the crosshair is idle, then the frame size in native export pixels while a
-  region, a hovered window, or a crop handle is being sized.
+  region, a hovered window, or a crop handle is being sized. Crosshair guides
+  appear without requiring an initial mouse movement.
 - Window capture is a crop of the focused-monitor frame. Overlapping windows stay
   visible; there is no second clean-window recapture.
 - Select/move/resize layers, mouse-wheel scaling, and eight external recropping handles.
