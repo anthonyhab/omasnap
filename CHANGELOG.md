@@ -16,6 +16,9 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 
 - Framed canvas growth keeps 15 px of mat beyond a layer that outgrows the
   normal frame, so an arrow or label no longer ends flush against the edge.
+- A label typed outside the image grows the canvas as soon as its caret is
+  placed there and keeps pace with the text, instead of flashing away when the
+  placing click ends and only returning on commit.
 - Canvas growth is live in both directions: the mat and card shadow follow a
   layer as it is drawn or carried past the image edge, and give way again as
   it is carried back, instead of settling on release. Framed previews its
