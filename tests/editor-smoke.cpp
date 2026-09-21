@@ -6352,6 +6352,155 @@ bool runSelectOutsideCanvasSmoke(QApplication &application, QString &error) {
   return true;
 }
 
+/** The displayed mat is a scaled preview of the actual saved pixels. */
+bool runBackdropPreviewMatchesExport(QApplication &application,
+                                      const QString &outputRoot,
+                                      QString &error) {
+  const struct {
+    QSize source;
+    qreal nativeScale;
+    bool windowed;
+    BackgroundStyle background;
+    bool shadow;
+    bool grown;
+    bool zoom;
+  } cases[] = {{{320, 220}, 1.0, false, BackgroundStyle::Aurora, true, false, false},
+               {{1500, 1000}, 1.5, true, BackgroundStyle::Lagoon, true, false, false},
+               {{1400, 900}, 2.0, false, BackgroundStyle::Sunset, false, false, false},
+               {{320, 220}, 2.0, true, BackgroundStyle::Violet, true, false, true},
+               {{1200, 800}, 1.5, true, BackgroundStyle::Aurora, true, true, false},
+               {{320, 220}, 1.0, false, BackgroundStyle::Slate, true, true, true}};
+  int index = 0;
+  for (const auto &fixture : cases) {
+    CaptureData capture;
+    capture.monitor.scale = fixture.nativeScale;
+    capture.previewSize = fixture.source;
+    capture.source = QImage(qRound(fixture.source.width() * fixture.nativeScale),
+                            qRound(fixture.source.height() * fixture.nativeScale),
+                            QImage::Format_ARGB32_Premultiplied);
+    capture.source.fill(QColor(QStringLiteral("#527196")));
+    Operation backdrop;
+    backdrop.type = Operation::Type::Background;
+    backdrop.background = fixture.background;
+    backdrop.imageShadow = fixture.shadow;
+    OperationLog log;
+    log.ops = {backdrop};
+    if (fixture.grown) {
+      Annotation outside;
+      outside.id = 1;
+      outside.kind = Annotation::Kind::Rectangle;
+      outside.start = {-80, -60};
+      outside.end = {-30, -20};
+      outside.color = Qt::red;
+      outside.size = 3;
+      Operation annotate;
+      annotate.type = Operation::Type::Annotate;
+      annotate.annotations = {outside};
+      log.ops.push_back(annotate);
+      log.nextId = 2;
+    }
+    log.index = log.ops.size();
+    CaptureEditor editor(capture, CaptureEditor::CaptureMode::File,
+                         QuickOutputMode::None, log);
+    editor.setSuppressSnapshots(true);
+    editor.setWindowedPresentation(fixture.windowed);
+    editor.resize(1000, 850);
+    editor.show();
+    application.processEvents();
+    const QString prefix = outputRoot + QStringLiteral("-backdrop-%1").arg(index++);
+    const QImage exported = editor.renderCurrentOutput();
+    if (!exported.save(prefix + QStringLiteral("-export.png")))
+      return false;
+    const QImage saved(prefix + QStringLiteral("-export.png"));
+    const auto history = editor.operationLog();
+    if (fixture.zoom) {
+      const QPointF center = editor.sourceFrameWidgetRectForTest().center();
+      QWheelEvent zoom(center, editor.mapToGlobal(center.toPoint()), {}, {0, 240},
+                       Qt::NoButton, Qt::ControlModifier, Qt::NoScrollPhase, false);
+      QApplication::sendEvent(&editor, &zoom);
+      application.processEvents();
+    }
+    const QRectF source = editor.sourceFrameWidgetRectForTest();
+    const QRectF canvas = editor.currentCanvasForTest();
+    const qreal scaleX = source.width() / capture.source.width();
+    const qreal scaleY = source.height() / capture.source.height();
+    const QPointF sourceOrigin = fixture.grown
+        ? QPointF(std::ceil(-canvas.left() * fixture.nativeScale),
+                   std::ceil(-canvas.top() * fixture.nativeScale))
+        : QPointF((saved.width() - capture.source.width()) / 2.0,
+                   (saved.height() - capture.source.height()) / 2.0);
+    const QRectF frame(source.topLeft() -
+                           QPointF(sourceOrigin.x() * scaleX, sourceOrigin.y() * scaleY),
+                        QSizeF(saved.width() * scaleX, saved.height() * scaleY));
+    const QImage actual = editor.grab().toImage();
+    QImage expected(actual.size(), QImage::Format_ARGB32_Premultiplied);
+    expected.setDevicePixelRatio(actual.devicePixelRatio());
+    expected.fill(Qt::transparent);
+    {
+      QPainter painter(&expected);
+      painter.setRenderHint(QPainter::SmoothPixmapTransform);
+      painter.drawImage(frame, saved);
+    }
+    actual.save(prefix + QStringLiteral("-editor.png"));
+    expected.save(prefix + QStringLiteral("-expected.png"));
+    if (!fixture.zoom &&
+        !editor.editViewportRectForTest().adjusted(-1, -1, 1, 1).contains(frame)) {
+      error = QStringLiteral("Backdrop fixture %1 did not fit the complete export")
+                  .arg(index - 1);
+      return false;
+    }
+    const QRect samples = frame.adjusted(3, 3, -3, -3)
+                              .intersected(editor.editViewportRectForTest())
+                              .toAlignedRect();
+    int count = 0;
+    int different = 0;
+    qreal totalError = 0;
+    for (int y = samples.top(); y <= samples.bottom(); y += 2) {
+      for (int x = samples.left(); x <= samples.right(); x += 2) {
+        // Exclude the source image and its crop controls. Compare the actual
+        // gradient and shadow with the saved PNG at the same presentation size.
+        const QPointF point(x, y);
+        if (source.adjusted(-10, -10, 10, 10).contains(point))
+          continue;
+        const QColor a = grabLogicalPixel(actual, editor, point);
+        const QColor b = grabLogicalPixel(expected, editor, point);
+        const int delta = std::max({std::abs(a.red() - b.red()),
+                                    std::abs(a.green() - b.green()),
+                                    std::abs(a.blue() - b.blue())});
+        totalError += delta;
+        different += delta > 12;
+        ++count;
+      }
+    }
+    // Rasterizing vectors at display resolution differs slightly from scaling
+    // native pixels, particularly along a shadow ring or annotation edge.
+    if (count < 200 || totalError / count > 3 || different > count / 50) {
+      error = QStringLiteral("Backdrop fixture %1 differs from its saved PNG: "
+                             "%2 samples, mean error %3, %4 large differences")
+                  .arg(index - 1).arg(count).arg(count ? totalError / count : 0)
+                  .arg(different);
+      return false;
+    }
+    if (!fixture.grown && source.width() / fixture.source.width() >= 0.9) {
+      // Inside the upper-left corner, away from the external crop handle.
+      // The old 10 px preview radius disagrees with the exported 14 px radius.
+      const QPointF corner = source.topLeft() +
+          QPointF(3, 3) * (source.width() / fixture.source.width());
+      if (!colorNear(grabLogicalPixel(actual, editor, corner),
+                     grabLogicalPixel(expected, editor, corner), 12)) {
+        error = QStringLiteral("The preview corner radius differs from the export");
+        return false;
+      }
+    }
+    if (editor.operationLog() != history || editor.renderCurrentOutput() != exported) {
+      error = QStringLiteral("Preview fitting or zooming changed the document");
+      return false;
+    }
+    editor.close();
+  }
+  return true;
+}
+
 /** Fullscreen B starts with blue, runs through every shadowed color, then
  *  demonstrates shadowed gray, flat gray, Off, and its blue wrap. */
 bool runFullscreenBackdropCycleSmoke(QApplication &application,
@@ -11164,6 +11313,10 @@ int main(int argc, char **argv) {
       argc > 1 ? QString::fromLocal8Bit(argv[1])
                : QDir(QDir::tempPath())
                      .filePath(QStringLiteral("omasnap-native-smoke"));
+  if (!runBackdropPreviewMatchesExport(application, outputRoot, snapshotError)) {
+    qWarning().noquote() << snapshotError;
+    return 214;
+  }
   if (!runCutMappingSmoke(application, outputRoot, snapshotError)) {
     qWarning().noquote() << snapshotError;
     return 96;

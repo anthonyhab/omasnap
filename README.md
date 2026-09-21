@@ -53,6 +53,8 @@ preview keeps it on screen.
   one-click whole-image or drag-region OCR (the recognized text is shown beside
   the image and copied to the clipboard),
   mesh-gradient backdrops, and rendered drop shadows on standard backdrop cards.
+  The editor previews the same background padding, rounding, and shadow as the
+  saved image, including when zoomed or fitted to a smaller window.
 - Dragging an arrow head, tail, or bend, or a line endpoint, hides the cursor
   and drag handles for precise placement. They return on release or cancellation.
 - Cut tool: drag across a band of the image to remove it and collapse the gap, with a
