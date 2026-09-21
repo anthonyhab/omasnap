@@ -30,6 +30,9 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 
 ### Fixed
 
+- A spotlight on a grown canvas no longer recomposes that whole canvas on
+  every repaint, pointer hover included: only the patch its lens magnifies is
+  composed, which takes a 6K drag from 37 ms a frame to under 5.
 - Moving or drawing a layer no longer leaves torn outlines, stale selection
   handles, or a stepped block of dimming or backdrop behind it. Dragging out a
   spotlight, hollow ellipses, selected pen and highlighter strokes, layers
