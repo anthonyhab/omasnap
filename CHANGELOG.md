@@ -37,6 +37,8 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 
 ### Fixed
 
+- Preserve image proportions when reopening a pin or preview whose backdrop
+  or annotations expanded the original capture.
 - Extend spotlight dimming across the live canvas while typing text outside
   it, without waiting for the text to be committed.
 - A long label being typed can no longer end up shifted sideways with the
