@@ -12,6 +12,7 @@
 #include "cut-mapping-smoke.hpp"
 #include "cut-smoke.hpp"
 #include "editor.hpp"
+#include "shortcut-guide.hpp"
 #include "selection-repaint-smoke.hpp"
 #include "overlay-chrome.hpp"
 #include "recent-snaps.hpp"
@@ -900,6 +901,120 @@ bool runChromeFontCheck(QString &error) {
   }
   return true;
 }
+
+bool runShortcutGuideSmoke(QApplication &application, QString &error) {
+  CaptureData capture;
+  capture.monitor.name = QStringLiteral("TEST");
+  capture.monitor.geometry = {0, 0, 1200, 800};
+  capture.monitor.pixelSize = {1200, 800};
+  capture.monitor.scale = 1.0;
+  capture.source = QImage(1100, 650, QImage::Format_ARGB32_Premultiplied);
+  capture.source.fill(QColor(QStringLiteral("#d8dde6")));
+  capture.previewSize = capture.source.size();
+
+  for (const auto mode : {CaptureEditor::CaptureMode::Region,
+                          CaptureEditor::CaptureMode::File}) {
+    CaptureEditor editor(capture, mode);
+    editor.setSuppressSnapshots(true);
+    editor.resize(1200, 800);
+    editor.show();
+    editor.activateWindow();
+    editor.setFocus();
+    if (!QTest::qWaitForWindowExposed(&editor)) {
+      error = QStringLiteral("Shortcut guide window was not exposed");
+      return false;
+    }
+    auto *guide = editor.findChild<ShortcutGuide *>();
+    if (!guide || !guide->isVisible() || !guide->expanded()) {
+      error = QStringLiteral("Shortcut guide did not open by default");
+      return false;
+    }
+    const QPoint local(5, 18);
+    const QImage card = guide->grab().toImage();
+    const QImage shown = editor.grab().toImage();
+    const QColor surface =
+        card.pixelColor((QPointF(local) * card.devicePixelRatio()).toPoint());
+    if (surface.alpha() != 255 ||
+        shown.pixelColor((QPointF(guide->mapTo(&editor, local)) *
+                          shown.devicePixelRatio()).toPoint()) != surface) {
+      error = QStringLiteral("Shortcut card was translucent or behind the image");
+      return false;
+    }
+    const int operations = editor.operationIndex();
+    QTest::mouseClick(guide, Qt::LeftButton, Qt::NoModifier, QPoint(20, 30));
+    if (editor.operationIndex() != operations ||
+        editor.annotationCountForTest() != 0) {
+      error = QStringLiteral("Reading the shortcut card changed the capture");
+      return false;
+    }
+    QTest::keyClick(&editor, Qt::Key_Question, Qt::ShiftModifier);
+    application.processEvents();
+    if (guide->expanded() || guide->height() > 40) {
+      error = QStringLiteral("Question mark did not collapse the shortcut card");
+      return false;
+    }
+    const QImage collapsed = editor.grab().toImage();
+    const QRect toolbar(0, 0, shown.width(), qRound(90 * shown.devicePixelRatio()));
+    if (shown.copy(toolbar) != collapsed.copy(toolbar)) {
+      error = QStringLiteral("Collapsing the shortcut card changed the toolbar");
+      return false;
+    }
+    QTest::mouseClick(guide, Qt::LeftButton, Qt::NoModifier, guide->rect().center());
+    if (!guide->expanded()) {
+      error = QStringLiteral("Shortcuts button did not reopen the card");
+      return false;
+    }
+    if (mode == CaptureEditor::CaptureMode::File) {
+      editor.resize(800, 420);
+      application.processEvents();
+      const QImage firstRows = guide->grab().toImage();
+      const QPointF position = guide->rect().center();
+      QWheelEvent wheel(position, guide->mapToGlobal(position.toPoint()),
+                         {}, {0, -120}, Qt::NoButton, Qt::NoModifier,
+                         Qt::NoScrollPhase, false);
+      QApplication::sendEvent(guide, &wheel);
+      if (!editor.rect().contains(guide->geometry()) ||
+          guide->grab().toImage() == firstRows) {
+        error = QStringLiteral("Short-screen shortcut card did not fit and scroll");
+        return false;
+      }
+      editor.resize(1200, 800);
+      application.processEvents();
+      QTest::keyClick(&editor, Qt::Key_T);
+      QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, QPoint(800, 300));
+      auto *draft = editor.findChild<QPlainTextEdit *>();
+      if (!draft || !draft->isVisible()) {
+        error = QStringLiteral("Shortcut test could not start a text annotation");
+        return false;
+      }
+      QTest::keyClicks(draft, QStringLiteral("?"));
+      if (draft->toPlainText() != QStringLiteral("?") || !guide->expanded()) {
+        error = QStringLiteral("Shortcut toggle stole a typed question mark");
+        return false;
+      }
+      QTest::keyClick(draft, Qt::Key_Backspace);
+      QTest::keyClick(draft, Qt::Key_Return);
+      if (editor.renderCurrentOutput() != capture.source) {
+        error = QStringLiteral("Shortcut card appeared in the exported capture");
+        return false;
+      }
+    }
+    editor.close();
+  }
+  return true;
+}
+
+// Canvas tests keep the reference card collapsed, as a user can, so its
+// deliberate overlap does not conceal the annotation pixels being tested.
+class CollapseShortcutGuides final : public QObject {
+  bool eventFilter(QObject *watched, QEvent *event) override {
+    if (event->type() == QEvent::Show) {
+      if (auto *guide = qobject_cast<ShortcutGuide *>(watched))
+        guide->setExpanded(false);
+    }
+    return QObject::eventFilter(watched, event);
+  }
+};
 
 bool runTextBandDetectionCheck(QString &error) {
   for (const qreal scale : {1.0, 2.0}) {
@@ -11679,6 +11794,12 @@ int main(int argc, char **argv) {
     return 0;
   }
   QString snapshotError;
+  if (!runShortcutGuideSmoke(application, snapshotError)) {
+    qWarning().noquote() << snapshotError;
+    return 216;
+  }
+  CollapseShortcutGuides collapseGuides;
+  application.installEventFilter(&collapseGuides);
   if (!runScrollFocusSmoke(snapshotError)) {
     qWarning().noquote() << snapshotError;
     return 224;

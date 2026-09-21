@@ -7,6 +7,8 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 
 ### Added
 
+- A readable shortcuts card above the capture/editor canvas. Press `?` or click
+  its header to collapse it; scroll the card when the screen is too short.
 - Press `E` (edit) or `A` (annotate) in the capture picker to toggle keeping
   the annotator open after capture, including scrolling captures.
 - Press `T` ("tack") while hovering a preview to pin or unpin it, alongside

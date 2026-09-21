@@ -1,6 +1,7 @@
 /** @fileoverview Handles screenshot selection, annotation, and editor drawing.
  */
 #include "editor.hpp"
+#include "shortcut-guide.hpp"
 #include "chrome-theme.hpp"
 #include "card-stack.hpp"
 #include "pin-file.hpp"
@@ -826,6 +827,7 @@ CaptureEditor::CaptureEditor(CaptureData capture, CaptureMode mode,
   setAttribute(Qt::WA_TranslucentBackground);
   setFocusPolicy(Qt::StrongFocus);
   setMouseTracking(true);
+  shortcutGuide_ = new ShortcutGuide(this);
 
   for (QScreen *screen : QGuiApplication::screens()) {
     if (screen->name() == capture_.monitor.name) {
@@ -3734,6 +3736,7 @@ void CaptureEditor::beginText(const QPointF &point, int annotationIndex,
   layoutTextEditor();
   textEditor_->show();
   textEditor_->raise();
+  shortcutGuide_->raise();
   textEditor_->setFocus(Qt::MouseFocusReason);
   if (!existingText.isEmpty())
     textEditor_->selectAll();
@@ -4254,6 +4257,17 @@ void CaptureEditor::keyPressEvent(QKeyEvent *event) {
   if (capturePending_) {
     if (dismiss)
       handleEscape();
+    event->accept();
+    return;
+  }
+  // Shift is normally part of typing '?'; modifier chords and text drafts
+  // keep their normal meaning. Toggling help never changes the active tool.
+  if (event->key() == Qt::Key_Question &&
+      !(event->modifiers() & (Qt::ControlModifier | Qt::AltModifier |
+                              Qt::MetaModifier)) &&
+      !textEditing() && shortcutGuide_->isVisible()) {
+    if (!event->isAutoRepeat())
+      shortcutGuide_->setExpanded(!shortcutGuide_->expanded());
     event->accept();
     return;
   }
@@ -6983,6 +6997,29 @@ void CaptureEditor::selectFullscreen() {
   update();
 }
 
+QVector<QPair<QString, QString>> CaptureEditor::captureHotkeyEntries() const {
+  QVector<QPair<QString, QString>> hotkeys;
+  if (smartMode_)
+    hotkeys = {
+        {QStringLiteral("Click"), QStringLiteral("Window / full screen")},
+        {QStringLiteral("Drag"), QStringLiteral("Area")},
+        {QStringLiteral("R"), QStringLiteral("Last region")},
+        {QStringLiteral("S"), QStringLiteral("Scrolling region")},
+        {QStringLiteral("Esc"), QStringLiteral("Close")}};
+  else
+    hotkeys = {{QStringLiteral("Drag"), QStringLiteral("Area")},
+               {QStringLiteral("Ctrl+A"), QStringLiteral("Fullscreen")},
+               {QStringLiteral("R"), QStringLiteral("Last region")},
+               {QStringLiteral("S"), QStringLiteral("Scrolling region")},
+               {QStringLiteral("Esc"), QStringLiteral("Close")}};
+  hotkeys.insert(hotkeys.size() - 1,
+                 {QStringLiteral("E / A"),
+                  quickOutputMode_ == QuickOutputMode::None
+                      ? QStringLiteral("Annotate after capture: on")
+                      : QStringLiteral("Annotate after capture: off")});
+  return hotkeys;
+}
+
 void CaptureEditor::paintSelect(QPainter &painter) {
   if (capture_.source.isNull()) {
     painter.fillRect(rect(), chromeAlpha(chromeTheme().scrim, kBackdropDim));
@@ -6995,30 +7032,6 @@ void CaptureEditor::paintSelect(QPainter &painter) {
     painter.drawPixmap(rect(), dimmedBackdrop_);
   }
   const bool exporting = phase_ == Phase::Export;
-  // Drawn first, low-opacity, no card: the live/frozen screen and selection
-  // paint over it wherever they overlap.
-  if (!exporting) {
-    QVector<QPair<QString, QString>> hotkeys;
-    if (smartMode_)
-      hotkeys = {
-          {QStringLiteral("Click"), QStringLiteral("Window / full screen")},
-          {QStringLiteral("Drag"), QStringLiteral("Area")},
-          {QStringLiteral("R"), QStringLiteral("Last region")},
-          {QStringLiteral("S"), QStringLiteral("Scrolling region")},
-          {QStringLiteral("Esc"), QStringLiteral("Close")}};
-    else
-      hotkeys = {{QStringLiteral("Drag"), QStringLiteral("Area")},
-                 {QStringLiteral("Ctrl+A"), QStringLiteral("Fullscreen")},
-                 {QStringLiteral("R"), QStringLiteral("Last region")},
-                 {QStringLiteral("S"), QStringLiteral("Scrolling region")},
-                 {QStringLiteral("Esc"), QStringLiteral("Close")}};
-    hotkeys.insert(hotkeys.size() - 1,
-                   {QStringLiteral("E / A"),
-                    quickOutputMode_ == QuickOutputMode::None
-                        ? QStringLiteral("Annotate after capture: on")
-                        : QStringLiteral("Annotate after capture: off")});
-    drawHotkeyLegend(painter, rect(), hotkeys);
-  }
 
   const bool smartWindow = smartMode_ && !dragging_ && hoveredWindow_ >= 0 &&
                            hoveredWindow_ < capture_.windows.size();
@@ -7131,10 +7144,6 @@ void CaptureEditor::paintEdit(QPainter &painter) {
   painter.fillRect(rect(), opaqueBackdrop ? chromeTheme().canvasSurface
                                           : chromeAlpha(chromeTheme().scrim, 160));
   painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
-  // Drawn first, low-opacity, no card: anything painted afterward (the
-  // image, the toolbar, a popup) simply covers it wherever they overlap.
-  if (!windowedPresentation_)
-    drawHotkeyLegend(painter, rect(), editorHotkeyEntries());
   const QRectF image = editImageRect();
   const QRectF visibleImage = visibleEditImageRect();
   const QRectF sourceImage = sourceFrameWidgetRect();
@@ -7750,6 +7759,12 @@ void CaptureEditor::paintEdit(QPainter &painter) {
 }
 
 void CaptureEditor::paintEvent(QPaintEvent *event) {
+  const bool showGuide = !windowedPresentation_ && !scrollPanel_ &&
+                         phase_ != Phase::Export;
+  if (showGuide)
+    shortcutGuide_->setEntries(phase_ == Phase::Edit ? editorHotkeyEntries()
+                                                   : captureHotkeyEntries());
+  shortcutGuide_->setVisible(showGuide);
   const bool firstPaint = !firstPaintReported_;
   if (firstPaint)
     startupTimingMark("first overlay paint started");
