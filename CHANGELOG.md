@@ -24,6 +24,11 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 
 ### Fixed
 
+- Moving or drawing a layer no longer leaves torn outlines, stale selection
+  handles, or a stepped block of dimming or backdrop behind it. Dragging out a
+  spotlight, hollow ellipses, selected pen and highlighter strokes, layers
+  carried past the image edge in Overflow, and any layer carried past the edge
+  while a spotlight is on the canvas all repaint completely.
 - Show capture crosshair guides and the correct hovered window on pointer entry,
   without waiting for the first mouse movement.
 - Keep dashed selection outlines stable during partial repaints, including
