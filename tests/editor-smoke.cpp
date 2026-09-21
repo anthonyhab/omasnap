@@ -45,6 +45,7 @@
 #include <QFileInfo>
 #include <QFontInfo>
 #include <QFontMetricsF>
+#include <QKeyEvent>
 #include <QPainter>
 #include <QPlainTextEdit>
 #include <QPixmap>
@@ -1682,6 +1683,123 @@ bool runPostCaptureChecks(QString &error) {
       return false;
     }
   }
+  // Both picker shortcuts keep every capture kind in the editor without
+  // copying or launching a preview. Holding the key must not toggle it off.
+  for (const Qt::Key key : {Qt::Key_E, Qt::Key_A}) {
+    for (const Mode mode : {Mode::Region, Mode::Smart, Mode::Window,
+                            Mode::Fullscreen, Mode::Scroll}) {
+      const QImage clipboardBefore(clipboard);
+      CaptureEditor editor(capture, mode == Mode::Fullscreen ? Mode::Smart : mode,
+                           QuickOutputMode::CopyAndPreview);
+      editor.setSuppressSnapshots(true);
+      bool launched = false;
+      editor.setProcessLauncherForTest([&](const QString &, const QStringList &) {
+        launched = true;
+        return false;
+      });
+      editor.resize(800, 600);
+      editor.show();
+      QTest::keyClick(&editor, key);
+      QKeyEvent repeat(QEvent::KeyPress, key, Qt::NoModifier, {}, true);
+      QApplication::sendEvent(&editor, &repeat);
+      if (mode == Mode::Region) {
+        QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, {100, 100});
+        QTest::mouseMove(&editor, {400, 300});
+        QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier, {400, 300});
+      } else if (mode == Mode::Smart || mode == Mode::Window) {
+        QTest::mouseMove(&editor, {200, 180});
+        QTest::mouseClick(&editor, Qt::LeftButton, Qt::NoModifier, {200, 180});
+      } else if (mode == Mode::Fullscreen) {
+        QTest::keyClick(&editor, Qt::Key_A, Qt::ControlModifier);
+      } else {
+        QTest::keyClick(&editor, Qt::Key_S);
+        QTest::keyClick(&editor, Qt::Key_S);
+        QImage stitched(800, 2400, QImage::Format_ARGB32_Premultiplied);
+        stitched.fill(Qt::cyan);
+        editor.adoptStitchedForTest(stitched);
+      }
+      QApplication::processEvents();
+      editor.waitForExport();
+      if (!editor.isVisible() || !editor.editingForTest() ||
+          editor.exportingForTest() || launched ||
+          QImage(clipboard) != clipboardBefore ||
+          editor.armedToolForTest() != CaptureEditor::Tool::Select) {
+        error = QStringLiteral("Annotate shortcut %1 did not keep capture mode %2 editable")
+                    .arg(static_cast<int>(key)).arg(static_cast<int>(mode));
+        return false;
+      }
+      QTest::keyClick(&editor, Qt::Key_A);
+      if (editor.armedToolForTest() != CaptureEditor::Tool::Arrow) {
+        error = QStringLiteral("Picker shortcut replaced the Arrow shortcut in the editor");
+        return false;
+      }
+      QTest::keyClick(&editor, Qt::Key_E);
+      if (editor.armedToolForTest() != CaptureEditor::Tool::Ellipse) {
+        error = QStringLiteral("Picker shortcut replaced the Ellipse shortcut in the editor");
+        return false;
+      }
+    }
+  }
+
+  // The two aliases share one toggle and restore the requested destination,
+  // including explicit copy/save modes that do not create a preview.
+  for (const QuickOutputMode output : {QuickOutputMode::Copy, QuickOutputMode::Save,
+                                      QuickOutputMode::Both,
+                                      QuickOutputMode::CopyAndPreview}) {
+    QTemporaryDir savedDirectory;
+    if (!savedDirectory.isValid())
+      return false;
+    const QByteArray oldOutputDir = qgetenv("OMASNAP_SCREENSHOT_DIR");
+    const auto restoreOutput = qScopeGuard([&] {
+      oldOutputDir.isNull() ? qunsetenv("OMASNAP_SCREENSHOT_DIR")
+                           : qputenv("OMASNAP_SCREENSHOT_DIR", oldOutputDir);
+    });
+    qputenv("OMASNAP_SCREENSHOT_DIR", savedDirectory.path().toUtf8());
+    QImage clipboardBefore(3, 2, QImage::Format_ARGB32_Premultiplied);
+    clipboardBefore.fill(Qt::yellow);
+    if (!clipboardBefore.save(clipboard))
+      return false;
+    CaptureEditor editor(capture, Mode::Region, output);
+    QString pin;
+    editor.setProcessLauncherForTest([&](const QString &, const QStringList &args) {
+      if (args.size() != 2 || args.first() != QStringLiteral("--preview"))
+        return false;
+      pin = args.last();
+      return true;
+    });
+    const auto cleanup = qScopeGuard([&] {
+      if (!pin.isEmpty()) {
+        QFile::remove(pin);
+        QFile::remove(operationLogPath(pin));
+      }
+    });
+    editor.resize(800, 600);
+    editor.show();
+    QTest::keyClick(&editor, Qt::Key_E);
+    QTest::keyClick(&editor, Qt::Key_A);
+    QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, {150, 150});
+    QTest::mouseMove(&editor, {350, 250});
+    QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier, {350, 250});
+    const QImage expected = editor.renderCurrentOutput();
+    editor.waitForExport();
+    const QStringList saved = QDir(savedDirectory.path()).entryList(
+        {QStringLiteral("*.png")}, QDir::Files);
+    const bool shouldSave =
+        output == QuickOutputMode::Save || output == QuickOutputMode::Both;
+    const QImage expectedClipboard =
+        output == QuickOutputMode::Save ? clipboardBefore : expected;
+    if (editor.isVisible() || editor.editingForTest() ||
+        pin.isEmpty() != (output != QuickOutputMode::CopyAndPreview) ||
+        saved.size() != (shouldSave ? 1 : 0) ||
+        (shouldSave && QImage(savedDirectory.filePath(saved.first()))
+                           .convertToFormat(expected.format()) != expected) ||
+        QImage(clipboard).convertToFormat(expectedClipboard.format()) != expectedClipboard) {
+      error = QStringLiteral("Disabling annotation changed output destination %1")
+                  .arg(static_cast<int>(output));
+      return false;
+    }
+  }
+
   // Explicit pinning stays on screen, including a text draft committed by
   // Ctrl+P before the renderer takes its snapshot.
   for (const bool textDraft : {false, true}) {
@@ -3222,15 +3340,28 @@ bool runEditorHandoffRoundTrip(QApplication &application, QString &error) {
     return false;
   }
   for (const auto mode : {CaptureEditor::CaptureMode::Fullscreen,
-                          CaptureEditor::CaptureMode::Scroll}) {
-    CaptureEditor automatic(capture, mode, QuickOutputMode::None, {}, nullptr, true);
+                          CaptureEditor::CaptureMode::Scroll,
+                          CaptureEditor::CaptureMode::Smart}) {
+    const bool pickerShortcut = mode == CaptureEditor::CaptureMode::Smart;
+    CaptureEditor automatic(capture, mode,
+                            pickerShortcut ? QuickOutputMode::CopyAndPreview
+                                           : QuickOutputMode::None,
+                            {}, nullptr, true);
     QString automaticPath;
     automatic.setProcessLauncherForTest([&](const QString &, const QStringList &arguments) {
+      if (arguments.size() < 4 || arguments.at(0) != QStringLiteral("--file") ||
+          arguments.at(2) != QStringLiteral("--editor") ||
+          arguments.at(3) != QStringLiteral("window"))
+        return false;
       automaticPath = arguments.at(1);
       return true;
     });
     automatic.resize(800, 600);
     automatic.show();
+    if (pickerShortcut) {
+      QTest::keyClick(&automatic, Qt::Key_E);
+      QTest::keyClick(&automatic, Qt::Key_A, Qt::ControlModifier);
+    }
     if (mode == CaptureEditor::CaptureMode::Scroll) {
       application.processEvents();
       if (!automaticPath.isEmpty()) {
@@ -3242,7 +3373,7 @@ bool runEditorHandoffRoundTrip(QApplication &application, QString &error) {
     for (int attempt = 0; attempt < 500 && automatic.isVisible(); ++attempt)
       QTest::qWait(10);
     if (automatic.isVisible() || automaticPath.isEmpty()) {
-      error = QStringLiteral("Configured window handoff missed fullscreen or stitched scroll");
+      error = QStringLiteral("Configured window handoff missed a capture or annotation shortcut");
       return false;
     }
     QFile::remove(automaticPath);
