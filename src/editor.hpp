@@ -482,7 +482,8 @@ private:
   /// zoom 1, the viewport band once zoomed (the content fills it then).
   [[nodiscard]] qreal chromeAnchorTop() const;
   /// baseImageRect transformed by the current view zoom and pan (content and
-  /// annotations map through this). Equals baseImageRect at zoom 1.
+  /// annotations map through this). Crop drags hold the source mapping fixed
+  /// until release. Otherwise equals baseImageRect at zoom 1.
   [[nodiscard]] QRectF editImageRect() const;
   /// Fullscreen content band where a canvas-growing tool may begin outside
   /// the current canvas, excluding the toolbar and bottom status chrome.
@@ -702,6 +703,7 @@ private:
   QRectF canvasRect_;
   QPointF dragStart_;
   QRectF originalSelection_;
+  /// Source frame at crop press, anchoring pointer mapping and live painting.
   QRectF cropDragImageRect_;
   QRectF marqueeRect_;
   QPointF cursor_;
