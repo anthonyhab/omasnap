@@ -242,6 +242,8 @@ previews and pins are ordinary compositor windows and remain visible in later
 screen captures; close or move them aside when they cover the next capture area.
 
 For annotation before any output, add `--editor overlay` or `--editor window`.
+You can also press `E` (edit) or `A` (annotate) in the capture picker to keep
+the annotator open after the capture. Press either key again to turn it off.
 The editor then controls whether the result is copied, saved, or both.
 
 Quick output skips the preview as well as the annotation editor. Add `--copy` to copy
@@ -416,6 +418,7 @@ controls to return focus from the live page.
 | Click | In smart mode, capture the window under the pointer, or the full monitor outside any window |
 | Drag | Select a region, with its native pixel size shown at the pointer |
 | `S` | Toggle scrolling-region mode |
+| `E` / `A` | Toggle annotation after capture; the capture guide shows on/off, and the choice also applies to scrolling captures |
 | `R` | Restore the last drawn region, including from a previous Omasnap launch in this login session (same monitor and overlay size) |
 | `SUPER + Arrow` | Move among windows in window mode |
 | `Enter` | Capture the highlighted window |

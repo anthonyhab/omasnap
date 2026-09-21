@@ -4250,6 +4250,23 @@ void CaptureEditor::keyPressEvent(QKeyEvent *event) {
       selectFullscreen();
       return;
     }
+    if ((event->key() == Qt::Key_E || event->key() == Qt::Key_A) &&
+        !event->modifiers()) {
+      if (!event->isAutoRepeat()) {
+        if (quickOutputMode_ == QuickOutputMode::None) {
+          quickOutputMode_ = captureOutputBeforeEdit_;
+        } else {
+          captureOutputBeforeEdit_ = quickOutputMode_;
+          quickOutputMode_ = QuickOutputMode::None;
+        }
+        setStatus(quickOutputMode_ == QuickOutputMode::None
+                      ? QStringLiteral("Annotate after capture enabled")
+                      : QStringLiteral("Annotate after capture disabled"));
+        update();
+      }
+      event->accept();
+      return;
+    }
     const bool directionalKey =
         event->key() == Qt::Key_Left || event->key() == Qt::Key_Right ||
         event->key() == Qt::Key_Up || event->key() == Qt::Key_Down;
@@ -6697,6 +6714,11 @@ void CaptureEditor::paintSelect(QPainter &painter) {
                  {QStringLiteral("R"), QStringLiteral("Last region")},
                  {QStringLiteral("S"), QStringLiteral("Scrolling region")},
                  {QStringLiteral("Esc"), QStringLiteral("Close")}};
+    hotkeys.insert(hotkeys.size() - 1,
+                   {QStringLiteral("E / A"),
+                    quickOutputMode_ == QuickOutputMode::None
+                        ? QStringLiteral("Annotate after capture: on")
+                        : QStringLiteral("Annotate after capture: off")});
     drawHotkeyLegend(painter, rect(), hotkeys);
   }
 

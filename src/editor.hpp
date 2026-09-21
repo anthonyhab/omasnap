@@ -861,6 +861,9 @@ private:
   QString snapshotPath_;
   std::shared_ptr<PinSnapshotFile> pinDocument_;
   QuickOutputMode quickOutputMode_ = QuickOutputMode::None;
+  // E/A can temporarily replace automatic output with annotation, then
+  // restore the original destination (including explicit --copy/--save).
+  QuickOutputMode captureOutputBeforeEdit_ = QuickOutputMode::CopyAndPreview;
   QString status_ = QStringLiteral("Drag to select an area");
   InlineTextEdit *textEditor_ = nullptr;
   QPointF textPoint_;
