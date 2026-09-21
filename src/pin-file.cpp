@@ -62,10 +62,15 @@ std::shared_ptr<PinSnapshotFile> copyPinDocument(const QString &path, QString &e
   // The visible PNG is flattened. If its capture is still on the shelf,
   // restore the working document so editing a preview retains its layers too.
   QString source = path;
-  if (const auto recent = findRecentSnap(log.recentId)) {
+  QString recentError;
+  if (const auto recent = findRecentSnap(log.recentId, &recentError)) {
     if (!loadOperationLog(recent->logPath, log, error))
       return {};
     source = recent->sourcePath;
+  }
+  if (!recentError.isEmpty()) {
+    error = recentError;
+    return {};
   }
   const QString copy = pinnedSnapshotPath(1);
   if (copy.isEmpty() || !QFile::copy(source, copy)) {

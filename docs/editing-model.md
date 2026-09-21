@@ -50,7 +50,9 @@ quick output, explicit pins, and editors dismissed with `Esc`. Preview expiry
 only removes the runtime preview. The next overlay can reopen its recent card
 directly for annotation. A capture identity survives preview editing and editor
 handoffs so completing it again updates one entry and retains editable layers.
-Shelf writes, thumbnail rendering, and pruning run on the completion worker.
+Shelf writes, thumbnail rendering, and pruning continue on the completion worker
+after the preview appears and the overlay closes. Immediately reopening a preview
+waits for its pending document on a worker so the original layers remain editable.
 
 Opening a pin for annotation leaves its compositor window in place. A private
 copy retains the pristine source and operation log; `Esc` commits any text draft,

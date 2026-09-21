@@ -1,8 +1,10 @@
 #include "recent-snaps.hpp"
 
 #include "capture.hpp"
+#include "startup-timing.hpp"
 
 #include <QDateTime>
+#include <QDeadlineTimer>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -15,6 +17,7 @@
 #include <QStringList>
 
 #include <algorithm>
+#include <utility>
 
 namespace {
 // Entries are named by a zero-padded millisecond stamp so a plain name sort is
@@ -52,6 +55,19 @@ QStringList thumbNamesNewestFirst(const QDir &dir) {
   std::ranges::sort(names, std::greater<>());
   return names;
 }
+
+bool waitForPendingCaptures(const QDir &dir, const QString &id = {}) {
+  const QString pattern = QStringLiteral(".pending-%1.lock")
+                              .arg(id.isEmpty() ? QStringLiteral("*") : id);
+  QDeadlineTimer deadline(30000);
+  for (const QString &name : dir.entryList({pattern}, QDir::Files | QDir::Hidden)) {
+    QLockFile pending(dir.filePath(name));
+    pending.setStaleLockTime(0);
+    if (!pending.tryLock(static_cast<int>(deadline.remainingTime())))
+      return false;
+  }
+  return true;
+}
 } // namespace
 
 QString recentSnapsDirectory() {
@@ -73,6 +89,8 @@ QVector<RecentSnap> listRecentSnaps(bool loadThumbnails) {
   if (root.isEmpty())
     return {};
   const QDir dir(root);
+  // The overlay itself is already available; only its shelf worker waits.
+  static_cast<void>(waitForPendingCaptures(dir));
   QVector<RecentSnap> snaps;
   for (const QString &name : thumbNamesNewestFirst(dir)) {
     RecentSnap snap = snapForStem(dir, stemOf(name));
@@ -92,41 +110,64 @@ QVector<RecentSnap> listRecentSnaps(bool loadThumbnails) {
   return snaps;
 }
 
-std::optional<RecentSnap> findRecentSnap(const QString &recentId) {
+std::optional<RecentSnap> findRecentSnap(const QString &recentId, QString *error) {
   if (!validRecentId(recentId))
     return std::nullopt;
-  for (const RecentSnap &snap : listRecentSnaps(false)) {
-    if (snap.thumbPath.endsWith(QLatin1Char('-') + recentId + kThumbSuffix))
-      return snap;
+  const QString root = recentSnapsDirectory();
+  if (root.isEmpty())
+    return std::nullopt;
+  const QDir dir(root);
+  if (!waitForPendingCaptures(dir, recentId)) {
+    if (error)
+      *error = QStringLiteral("This capture is still being saved. Try editing it again shortly.");
+    return std::nullopt;
+  }
+  for (const QString &name : thumbNamesNewestFirst(dir)) {
+    if (name.endsWith(QLatin1Char('-') + recentId + kThumbSuffix)) {
+      const RecentSnap snap = snapForStem(dir, stemOf(name));
+      if (QFile::exists(snap.sourcePath))
+        return snap;
+    }
   }
   return std::nullopt;
 }
 
-bool recordRecentSnap(const QImage &source, const OperationLog &log,
-                      const QImage &rendered, QString &error) {
+RecentSnapWriter::RecentSnapWriter(QString recentId)
+    : recentId_(recentId.isEmpty() ? QUuid::createUuid().toString(QUuid::Id128)
+                                   : std::move(recentId)),
+      root_(recentSnapsDirectory()), stem_(entryStem()) {
+  if (!validRecentId(recentId_)) {
+    error_ = QStringLiteral("Invalid recent capture identity");
+    return;
+  }
+  if (root_.isEmpty()) {
+    error_ = QStringLiteral("Could not create the recent captures directory");
+    return;
+  }
+  pending_ = std::make_unique<QLockFile>(
+      QDir(root_).filePath(QStringLiteral(".pending-%1.lock").arg(recentId_)));
+  pending_->setStaleLockTime(0);
+  if (!pending_->tryLock(30000))
+    error_ = QStringLiteral("This capture is still being saved");
+}
+
+RecentSnapWriter::~RecentSnapWriter() = default;
+
+bool RecentSnapWriter::record(const QImage &source, const OperationLog &log,
+                              const QImage &rendered, QString &error) {
+  StartupTimingScope timing("record recent capture");
+  if (!error_.isEmpty()) {
+    error = error_;
+    return false;
+  }
   if (rendered.isNull() || source.isNull()) {
     error = QStringLiteral("Nothing to remember: no working document");
     return false;
   }
   OperationLog savedLog = log;
-  if (savedLog.recentId.isEmpty())
-    savedLog.recentId = QUuid::createUuid().toString(QUuid::Id128);
-  if (!validRecentId(savedLog.recentId)) {
-    error = QStringLiteral("Invalid recent capture identity");
-    return false;
-  }
-  const QString root = recentSnapsDirectory();
-  if (root.isEmpty()) {
-    error = QStringLiteral("Could not create the recent captures directory");
-    return false;
-  }
-  const QDir dir(root);
-  QLockFile lock(dir.filePath(QStringLiteral(".record.lock")));
-  if (!lock.tryLock(5000)) {
-    error = QStringLiteral("Could not lock the recent captures directory");
-    return false;
-  }
-  QString stem = entryStem();
+  savedLog.recentId = recentId_;
+  const QDir dir(root_);
+  QString stem = stem_;
   const QString suffix = QLatin1Char('-') + savedLog.recentId;
   while (QFile::exists(dir.filePath(stem + suffix + kThumbSuffix)))
     stem = QStringLiteral("%1").arg(stem.toLongLong() + 1, 16, 10, QChar('0'));
@@ -155,9 +196,18 @@ bool recordRecentSnap(const QImage &source, const OperationLog &log,
   if (!thumbFile.open(QIODevice::WriteOnly) ||
       !thumbFile.setPermissions(QFileDevice::ReadOwner |
                                 QFileDevice::WriteOwner) ||
-      !thumb.save(&thumbFile, "PNG") || !thumbFile.commit()) {
+      !thumb.save(&thumbFile, "PNG")) {
     error = QStringLiteral("Could not write recent capture thumbnail: %1")
                 .arg(thumbFile.errorString());
+    removeRecentSnap(snap);
+    return false;
+  }
+
+  // Only publication and pruning serialize across captures. In particular,
+  // a slow full-monitor PNG encode must not hold up another shot's preview.
+  QLockFile lock(dir.filePath(QStringLiteral(".record.lock")));
+  if (!lock.tryLock(5000) || !thumbFile.commit()) {
+    error = QStringLiteral("Could not publish the recent capture");
     removeRecentSnap(snap);
     return false;
   }
@@ -171,6 +221,12 @@ bool recordRecentSnap(const QImage &source, const OperationLog &log,
   for (qsizetype index = kRecentSnapLimit; index < names.size(); ++index)
     removeRecentSnap(snapForStem(dir, stemOf(names.at(index))));
   return true;
+}
+
+bool recordRecentSnap(const QImage &source, const OperationLog &log,
+                      const QImage &rendered, QString &error) {
+  RecentSnapWriter writer(log.recentId);
+  return writer.record(source, log, rendered, error);
 }
 
 void removeRecentSnap(const RecentSnap &snap) {

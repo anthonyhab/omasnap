@@ -42,6 +42,8 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 
 ### Fixed
 
+- Show the corner preview and dismiss the overlay before saving the full-resolution
+  recent document, removing the extra history-compression pause after capture.
 - Preserve image proportions when reopening a pin or preview whose backdrop
   or annotations expanded the original capture.
 - Extend spotlight dimming across the live canvas while typing text outside

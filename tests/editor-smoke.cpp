@@ -49,6 +49,7 @@
 #include <QFontInfo>
 #include <QFontMetricsF>
 #include <QKeyEvent>
+#include <QLockFile>
 #include <QPainter>
 #include <QPlainTextEdit>
 #include <QPixmap>
@@ -59,6 +60,7 @@
 #include <QWindow>
 #include <Qt>
 #include <QtTest/QTest>
+#include <QtConcurrent/QtConcurrentRun>
 
 #include <algorithm>
 #include <array>
@@ -2452,6 +2454,12 @@ bool runPostCaptureChecks(QString &error) {
   for (const Mode mode : {Mode::Region, Mode::Smart, Mode::Window,
                           Mode::Fullscreen, Mode::Scroll}) {
     CaptureEditor editor(capture, mode, QuickOutputMode::CopyAndPreview);
+    // Hold publication independently of machine/PNG speed. Preview completion
+    // must not wait on history, while an immediate Edit must wait for its source.
+    QLockFile slowHistory(QDir(recentSnapsDirectory()).filePath(QStringLiteral(".record.lock")));
+    if (mode == Mode::Region && !slowHistory.tryLock(0))
+      return false;
+    const auto releaseHistory = qScopeGuard([&] { slowHistory.unlock(); });
     QString pin;
     bool launchedOnWorker = false;
     editor.setProcessLauncherForTest([&](const QString &, const QStringList &args) {
@@ -2488,7 +2496,31 @@ bool runPostCaptureChecks(QString &error) {
       error = QStringLiteral("Fresh capture opened the editor instead of outputting");
       return false;
     }
-    editor.waitForExport();
+    if (mode == Mode::Region) {
+      if (!QTest::qWaitFor([&] { return !editor.isVisible(); }, 2000) || pin.isEmpty()) {
+        error = QStringLiteral("History persistence held up the corner preview or overlay dismissal");
+        return false;
+      }
+      auto reopening = QtConcurrent::run([pin] {
+        QString openError;
+        auto document = copyPinDocument(pin, openError);
+        return std::make_pair(document, openError);
+      });
+      const bool openedBeforeHistory = QTest::qWaitFor([&] { return reopening.isFinished(); }, 50);
+      slowHistory.unlock();
+      editor.waitForExport();
+      const auto [document, openError] = reopening.result();
+      OperationLog restored;
+      if (openedBeforeHistory || !document || !openError.isEmpty() ||
+          QImage(document->path()).convertToFormat(capture.source.format()) != capture.source ||
+          !loadOperationLog(operationLogPath(document->path()), restored, error) ||
+          restored.ops.isEmpty() || restored.ops.constLast().crop != editor.currentSelection()) {
+        error = QStringLiteral("Immediate preview editing raced history and lost the pristine source or crop");
+        return false;
+      }
+    } else {
+      editor.waitForExport();
+    }
     const auto cleanup = qScopeGuard([&] {
       QFile::remove(pin);
       QFile::remove(operationLogPath(pin));

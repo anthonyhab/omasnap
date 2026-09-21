@@ -617,7 +617,8 @@ OMASNAP_PROFILE_STARTUP=1 ./build/omasnap 2>startup.log
 ```
 
 The trace also breaks native capture into Wayland registry, buffer allocation, frame wait,
-and pixel handoff stages. It is completely silent by default.
+and pixel handoff stages, and marks output readiness separately from subsequent
+recent-history persistence. It is completely silent by default.
 
 `.github/workflows/build-linux.yml` runs the same `make check` build, interaction smoke,
 and available static-analysis checks in an Arch Linux container, stages the CMake installation, and uploads a versioned Linux
