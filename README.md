@@ -393,12 +393,18 @@ into a scrolling capture. Explicit `region`, `windows`, `fullscreen`, and
 | Click | In smart mode, capture the window under the pointer, or the full monitor outside any window |
 | Drag | Select a region, with its native pixel size shown at the pointer |
 | `S` | Toggle scrolling-region mode |
-| `R` | Restore the last region drawn this session (same monitor) |
+| `R` | Restore the last drawn region, including from a previous Omasnap launch in this login session (same monitor and overlay size) |
 | `SUPER + Arrow` | Move among windows in window mode |
 | `Enter` | Capture the highlighted window |
 | `Ctrl+A` | Select the full focused monitor |
 | Hover the right-edge stack | Fan out the five most recent captures; click one to reopen it |
 | `Esc` | Dismiss; cancel a selection drag if one is in progress |
+
+Region memory is stored in Omasnap's private runtime directory. It survives
+closing and reopening Omasnap and lasts until those runtime files are removed
+(normally when the login session ends). A region from another monitor, a
+different overlay size, or outside the current screen is ignored; draw a new
+region after changing the display layout.
 
 ### Annotation editor
 
