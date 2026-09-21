@@ -33,6 +33,10 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 
 ### Fixed
 
+- A long label being typed can no longer end up shifted sideways with the
+  start of every line cut off. Its box is always sized to the text, yet a
+  sideways touchpad swipe over it, or Qt centring the caret at the end of a
+  full line, could scroll it, and nothing scrolled it back until commit.
 - A spotlight on a grown canvas no longer recomposes that whole canvas on
   every repaint, pointer hover included: only the patch its lens magnifies is
   composed, which takes a 6K drag from 37 ms a frame to under 5.
