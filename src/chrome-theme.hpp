@@ -70,6 +70,10 @@ class ChromeThemeWatcher final : public QObject {
 public:
   explicit ChromeThemeWatcher(const QString &directory,
                               QObject *parent = nullptr);
+  // The loader parses with function-local static regexes; a short-lived
+  // run (--version, a quick output) can reach static destruction while it
+  // is still parsing, so teardown joins it first.
+  ~ChromeThemeWatcher() override { loader_.waitForFinished(); }
   [[nodiscard]] const ChromeTheme &theme() const { return theme_; }
 
 signals:
