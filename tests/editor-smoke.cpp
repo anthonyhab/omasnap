@@ -533,6 +533,86 @@ bool runMeasurementReadoutCheck(QString &error) {
   return true;
 }
 
+/** Tab locks a dragged area to 1:1, 3:4, or 16:9, and back to free. */
+bool runRegionAspectCheck(QString &error) {
+  CaptureData capture;
+  capture.monitor.geometry = QRect(0, 0, 800, 600);
+  capture.monitor.pixelSize = QSize(800, 600);
+  capture.source = QImage(800, 600, QImage::Format_ARGB32_Premultiplied);
+  capture.source.fill(QColor(QStringLiteral("#6480a0")));
+  capture.previewSize = QSize(800, 600);
+
+  const auto drag = [](CaptureEditor &editor, QPoint from, QPoint to,
+                       bool tabMidDrag) {
+    QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, from);
+    QTest::mouseMove(&editor, to, 20);
+    if (tabMidDrag)
+      QTest::keyClick(&editor, Qt::Key_Tab);
+    const QRectF selection = editor.currentSelection();
+    QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier, to);
+    return selection;
+  };
+  struct Case {
+    int tabs;
+    QString label;
+    QPoint from;
+    QPoint to;
+    QRectF expected;
+  };
+  const QVector<Case> cases = {
+      {0, QStringLiteral("Free"), {100, 100}, {300, 150}, {100, 100, 200, 50}},
+      {1, QStringLiteral("1:1"), {100, 100}, {300, 150}, {100, 100, 200, 200}},
+      {2, QStringLiteral("3:4"), {400, 300}, {340, 100}, {250, 100, 150, 200}},
+      {3, QStringLiteral("16:9"), {100, 100}, {260, 110}, {100, 100, 160, 90}},
+      // Clamped at the screen's bottom edge rather than leaving it.
+      {3, QStringLiteral("16:9"), {0, 510}, {400, 520}, {0, 510, 160, 90}},
+  };
+  for (const Case &test : cases) {
+    CaptureEditor editor(capture, CaptureEditor::CaptureMode::Region);
+    editor.setSuppressSnapshots(true);
+    editor.resize(800, 600);
+    editor.show();
+    QApplication::processEvents();
+    for (int tab = 0; tab < test.tabs; ++tab)
+      QTest::keyClick(&editor, Qt::Key_Tab);
+    if (editor.regionAspectLabelForTest() != test.label) {
+      error = QStringLiteral("%1 Tab presses gave aspect %2, expected %3")
+                  .arg(test.tabs)
+                  .arg(editor.regionAspectLabelForTest(), test.label);
+      return false;
+    }
+    const QRectF selection = drag(editor, test.from, test.to, false);
+    if (selection != test.expected) {
+      error = QStringLiteral("%1 drag selected %2,%3 %4x%5")
+                  .arg(test.label)
+                  .arg(selection.x())
+                  .arg(selection.y())
+                  .arg(selection.width())
+                  .arg(selection.height());
+      return false;
+    }
+    editor.close();
+  }
+
+  CaptureEditor editor(capture, CaptureEditor::CaptureMode::Region);
+  editor.setSuppressSnapshots(true);
+  editor.resize(800, 600);
+  editor.show();
+  QApplication::processEvents();
+  QTest::keyClick(&editor, Qt::Key_Tab, Qt::ShiftModifier);
+  if (editor.regionAspectLabelForTest() != QStringLiteral("16:9")) {
+    error = QStringLiteral("Shift+Tab did not cycle back to 16:9");
+    return false;
+  }
+  // Tab mid-drag wraps to free and reshapes the live frame at once.
+  if (drag(editor, {100, 100}, {300, 150}, true) != QRectF(100, 100, 200, 50)) {
+    error = QStringLiteral("Tab mid-drag did not reshape the live selection");
+    return false;
+  }
+  editor.close();
+  return true;
+}
+
 /** Smart selection infers a click target but keeps a real drag freeform. */
 bool runSmartSelectionSmoke(QApplication &application, QString &error) {
   CaptureData capture;
@@ -12247,6 +12327,10 @@ int main(int argc, char **argv) {
   if (!runMeasurementReadoutCheck(snapshotError)) {
     qWarning().noquote() << snapshotError;
     return 95;
+  }
+  if (!runRegionAspectCheck(snapshotError)) {
+    qWarning().noquote() << snapshotError;
+    return 225;
   }
   if (!runSmartSelectionSmoke(application, snapshotError)) {
     qWarning().noquote() << snapshotError;

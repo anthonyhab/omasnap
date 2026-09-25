@@ -7,6 +7,9 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 
 ### Added
 
+- `Tab` cycles region selection between free, square, 3:4, and 16:9 while
+  capturing; `Shift+Tab` cycles back. The capture guide shows the active aspect.
+
 - Fresh captures save automatically without losing the clipboard copy or timed
   preview. Set `[output] autosave = false` to opt out. Saved files survive preview
   expiry, and explicit copy-only output remains copy-only.
