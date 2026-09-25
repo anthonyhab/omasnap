@@ -33,12 +33,21 @@ public:
   struct Line {
     int low = 0;
     int high = 0;
+    /** Placed by the compositor (a window or bar edge), not read from pixels. */
+    bool anchored = false;
     /** The side a selection edge takes to keep the line inside it. */
     [[nodiscard]] int outer(bool lowEdge) const { return lowEdge ? low : high; }
   };
 
+  /**
+   * `anchors` are compositor rectangles (windows, bars) in native pixels.
+   * Their edges are exact even where the pixels show no line, such as a
+   * translucent window over a blurred wallpaper, and outrank what the image
+   * suggests.
+   */
   [[nodiscard]] static std::shared_ptr<const LineMap>
-  build(const QImage &source, qreal pixelsPerLogical);
+  build(const QImage &source, qreal pixelsPerLogical,
+        const QVector<QRectF> &anchors = {});
 
   [[nodiscard]] int width() const { return width_; }
   [[nodiscard]] int height() const { return height_; }
@@ -61,12 +70,16 @@ private:
   LineMap() = default;
   [[nodiscard]] bool runsAlong(Qt::Orientation orientation, int b,
                                int spanFirst, int spanLast) const;
+  [[nodiscard]] bool anchoredAlong(Qt::Orientation orientation, int b,
+                                   int spanFirst, int spanLast) const;
 
   int width_ = 0;
   int height_ = 0;
   qreal pixelsPerLogical_ = 1.0;
   std::vector<std::vector<Segment>> vertical_;
   std::vector<std::vector<Segment>> horizontal_;
+  std::vector<std::vector<Segment>> anchoredVertical_;
+  std::vector<std::vector<Segment>> anchoredHorizontal_;
 };
 
 namespace linesnap {
@@ -87,7 +100,8 @@ struct Snapped {
 /**
  * Snaps the edges in `edges`. The pull around each line reaches about half
  * way to its nearest neighbouring line, from 6 to 32 screen pixels, so a lone
- * border grabs from far while dense rules stay precise. `velocity` is the
+ * border grabs from far while dense rules stay precise. Compositor edges
+ * always pull at full reach and win a tie with a line read from pixels. `velocity` is the
  * pointer's motion in native pixels per millisecond; only `moving` edges
  * follow it. Heading toward a line reaches for it early, a fast flick glides
  * past, and a held line lets go as soon as the pointer pulls away from it.

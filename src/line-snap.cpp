@@ -11,14 +11,25 @@ namespace {
 // A colour step this large on the strongest channel is part of a line.
 // Coloured borders whose brightness matches the background still register.
 constexpr int kStep = 16;
-// Antialiasing and dashed rules break a run for a pixel or two; bridge it.
-constexpr int kRunGap = 2;
+// Antialiasing breaks a run for a pixel now and then; bridge that. Any
+// wider and the gaps between letters bridge too, turning a row of text into
+// a "line".
+constexpr int kRunGap = 1;
+// A real line has an even colour along both of its sides: the line itself
+// and the surface next to it. Along a row of text one side keeps changing
+// from glyph to gap, which is what keeps text out.
+constexpr int kSmoothStep = 12;
 // Runs shorter than this never become targets: glyph strokes, icon details.
 constexpr qreal kStoredRunLogical = 10.0;
 // A snap target must also be at least this long where it meets the edge.
 constexpr qreal kMinimumLineLogical = 18.0;
 // ...and run along this fraction of the edge, unless it is simply long.
 constexpr qreal kAlongFraction = 0.3;
+// Compositor edges are exact, so a shorter meeting with the edge counts.
+constexpr qreal kAnchoredAlongFraction = 0.15;
+// A compositor edge wins a tie against a pixel line at this share of its
+// distance.
+constexpr qreal kAnchoredPreference = 0.5;
 constexpr qreal kLongLineLogical = 160.0;
 // Boundaries this close together are the two sides of one drawn line.
 constexpr int kClusterGap = 3;
@@ -76,7 +87,8 @@ void finish(RunBuilder &run, std::vector<LineMap::Segment> &segments,
 } // namespace
 
 std::shared_ptr<const LineMap> LineMap::build(const QImage &source,
-                                              qreal pixelsPerLogical) {
+                                              qreal pixelsPerLogical,
+                                              const QVector<QRectF> &anchors) {
   const int width = source.width();
   const int height = source.height();
   if (width < 2 || height < 2 ||
@@ -94,6 +106,20 @@ std::shared_ptr<const LineMap> LineMap::build(const QImage &source,
   map->pixelsPerLogical_ = std::max<qreal>(pixelsPerLogical, 0.01);
   map->vertical_.resize(width + 1);
   map->horizontal_.resize(height + 1);
+  map->anchoredVertical_.resize(width + 1);
+  map->anchoredHorizontal_.resize(height + 1);
+  for (const QRectF &anchor : anchors) {
+    const int left = std::clamp(qRound(anchor.left()), 0, width);
+    const int right = std::clamp(qRound(anchor.right()), 0, width);
+    const int top = std::clamp(qRound(anchor.top()), 0, height);
+    const int bottom = std::clamp(qRound(anchor.bottom()), 0, height);
+    if (right - left < 2 || bottom - top < 2)
+      continue;
+    map->anchoredVertical_[left].push_back({top, bottom - 1});
+    map->anchoredVertical_[right].push_back({top, bottom - 1});
+    map->anchoredHorizontal_[top].push_back({left, right - 1});
+    map->anchoredHorizontal_[bottom].push_back({left, right - 1});
+  }
   const int minimum =
       std::max(2, qRound(kStoredRunLogical * map->pixelsPerLogical_));
 
@@ -103,15 +129,26 @@ std::shared_ptr<const LineMap> LineMap::build(const QImage &source,
   const QRgb *previous = nullptr;
   for (int y = 0; y < height; ++y) {
     const auto *line = reinterpret_cast<const QRgb *>(image.constScanLine(y));
-    for (int b = 1; b < width; ++b)
+    for (int b = 1; b < width; ++b) {
+      // Along a vertical boundary "along" is down: compare with the row
+      // above on both sides.
+      const bool smooth =
+          !previous ||
+          (colorStep(line[b - 1], previous[b - 1]) <= kSmoothStep &&
+           colorStep(line[b], previous[b]) <= kSmoothStep);
       extend(columns[b], map->vertical_[b], y,
-             colorStep(line[b - 1], line[b]) >= kStep, minimum);
+             smooth && colorStep(line[b - 1], line[b]) >= kStep, minimum);
+    }
     if (previous) {
       RunBuilder row;
       std::vector<Segment> &segments = map->horizontal_[y];
-      for (int x = 0; x < width; ++x)
-        extend(row, segments, x, colorStep(previous[x], line[x]) >= kStep,
-               minimum);
+      for (int x = 0; x < width; ++x) {
+        const bool smooth =
+            x == 0 || (colorStep(previous[x], previous[x - 1]) <= kSmoothStep &&
+                       colorStep(line[x], line[x - 1]) <= kSmoothStep);
+        extend(row, segments, x,
+               smooth && colorStep(previous[x], line[x]) >= kStep, minimum);
+      }
       finish(row, segments, minimum);
     }
     previous = line;
@@ -160,6 +197,25 @@ bool LineMap::runsAlong(Qt::Orientation orientation, int b, int spanFirst,
          (overlap >= kAlongFraction * span || overlap >= longLine);
 }
 
+bool LineMap::anchoredAlong(Qt::Orientation orientation, int b,
+                            int spanFirst, int spanLast) const {
+  const auto &planes =
+      orientation == Qt::Vertical ? anchoredVertical_ : anchoredHorizontal_;
+  if (b < 0 || b >= static_cast<int>(planes.size()))
+    return false;
+  const qreal span = spanLast - spanFirst + 1;
+  int overlap = 0;
+  for (const Segment &segment : planes[b]) {
+    const int from = std::max(segment.first, spanFirst);
+    const int to = std::min(segment.last, spanLast);
+    if (to >= from)
+      overlap += to - from + 1;
+  }
+  return overlap > 0 &&
+         (overlap >= kAnchoredAlongFraction * span ||
+          overlap >= kMinimumLineLogical * pixelsPerLogical_);
+}
+
 QVector<LineMap::Line> LineMap::lines(Qt::Orientation orientation, int from,
                                       int to, int spanFirst,
                                       int spanLast) const {
@@ -170,15 +226,20 @@ QVector<LineMap::Line> LineMap::lines(Qt::Orientation orientation, int from,
   spanLast = std::clamp(spanLast, 0, crossExtent - 1);
   if (spanLast < spanFirst)
     return result;
-  from = std::max(from, 1);
-  to = std::min(to, extent - 1);
+  // Compositor edges may sit on the frame's own border (a bar at the top
+  // of the screen), so they are looked for from 0 to the far edge.
+  from = std::max(from, 0);
+  to = std::min(to, extent);
   for (int b = from; b <= to; ++b) {
-    if (!runsAlong(orientation, b, spanFirst, spanLast))
+    const bool anchored = anchoredAlong(orientation, b, spanFirst, spanLast);
+    if (!anchored && !runsAlong(orientation, b, spanFirst, spanLast))
       continue;
-    if (!result.isEmpty() && b - result.last().high <= kClusterGap)
+    if (!result.isEmpty() && b - result.last().high <= kClusterGap) {
       result.last().high = b;
-    else
-      result.push_back({b, b});
+      result.last().anchored = result.last().anchored || anchored;
+    } else {
+      result.push_back({b, b, anchored});
+    }
   }
   return result;
 }
@@ -221,7 +282,10 @@ std::optional<qreal> snapEdge(const LineMap &map, Qt::Orientation orientation,
       gap = std::min(gap, target - lines.at(index - 1).outer(lowEdge));
     if (index + 1 < lines.size())
       gap = std::min(gap, lines.at(index + 1).outer(lowEdge) - target);
-    qreal pull = std::clamp(kPullShare * gap, pullMinimum, pullMaximum);
+    const bool anchored = lines.at(index).anchored;
+    qreal pull = anchored
+                     ? pullMaximum
+                     : std::clamp(kPullShare * gap, pullMinimum, pullMaximum);
     const qreal toward = (target - position) * velocity;
     if (held && std::abs(*held - target) < 0.5) {
       // Moving off the line the edge sits on is intent; everything else
@@ -237,7 +301,8 @@ std::optional<qreal> snapEdge(const LineMap &map, Qt::Orientation orientation,
     }
     if (distance > pull)
       continue;
-    const qreal score = distance / std::max(pull, 0.01);
+    const qreal score = distance / std::max(pull, 0.01) *
+                        (anchored ? kAnchoredPreference : 1.0);
     if (score < bestScore) {
       bestScore = score;
       best = target;
