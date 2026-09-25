@@ -20,7 +20,7 @@ preview keeps it on screen.
 - Smart selection by default: drag a freeform region, click a window to crop
   it, or click open monitor space for the full monitor. Explicit region,
   window, fullscreen, and scrolling-region modes remain available.
-- Fresh captures copy immediately and show a floating preview for 10 seconds
+- Fresh captures save, copy to the clipboard, and show a floating preview for 10 seconds
   without taking keyboard focus. Hover for Pin, Edit, Copy, file drag, and Close
   controls. Use the pin button, `Ctrl+P`, `T` while hovered, or drag the preview to
   keep it on screen.
@@ -248,7 +248,7 @@ omasnap fullscreen
 omasnap smart
 ```
 
-These options choose what is initially selected. Completing a selection copies it
+These options choose what is initially selected. Completing a selection saves it, copies it,
 and shows a preview that fades after 10 seconds of idle time unless kept. Existing
 previews and pins are ordinary compositor windows and remain visible in later
 screen captures; close or move them aside when they cover the next capture area.
@@ -257,6 +257,11 @@ For annotation before any output, add `--editor overlay` or `--editor window`.
 You can also press `E` (edit) or `A` (annotate) in the capture picker to keep
 the annotator open after the capture. Press either key again to turn it off.
 The editor then controls whether the result is copied, saved, or both.
+
+Fresh captures automatically save as well as copying to the clipboard and
+showing a preview. Set `[output] autosave = false` to opt out. Preview expiry leaves the saved PNG intact. Explicit
+`--copy` remains copy-only; annotation before output still waits for your chosen
+Copy or Save action.
 
 Quick output skips the preview as well as the annotation editor. Add `--copy` to copy
 only, `--save` to save only, or both flags to copy and save. Region and window captures output after selection;
@@ -370,6 +375,9 @@ window = floating
 backdrop = opaque
 
 [output]
+# Save fresh captures while still copying and showing the timed preview.
+# Default: true. Set false to opt out.
+autosave = true
 # Where saved screenshots go. Default: ~/Pictures/Screenshots
 directory = ~/Pictures/Captures
 # Filename pattern, without extension (.png is appended).

@@ -6,6 +6,8 @@
 #include <QString>
 
 struct OutputConfig {
+  /** Save fresh captures while retaining clipboard copy and timed preview. */
+  bool autosave = true;
   /** Screenshot directory; empty means `~/Pictures/Screenshots`. */
   QString directory;
   /** Filename pattern without extension. Tokens: `{date}` (yyyy-MM-dd),
@@ -13,7 +15,7 @@ struct OutputConfig {
   QString filename = QStringLiteral("screenshot-{date}_{time}-{app}");
 };
 
-/** Reads [output] directory and [output] filename. A missing file or key
+/** Reads [output] autosave, directory, and filename. A missing file or key
  *  leaves the default untouched; `~` in directory expands to $HOME. */
 [[nodiscard]] OutputConfig loadOutputConfig(const QString &filePath);
 

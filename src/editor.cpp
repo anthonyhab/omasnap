@@ -4140,7 +4140,9 @@ void CaptureEditor::finish(OutputMode mode) {
           qWarning().noquote() << recoveryError;
       }
     });
-    if (mode == OutputMode::CopyAndPreview) {
+    const bool autosave = mode == OutputMode::CopyAndPreview &&
+                          loadOutputConfig(defaultConfigPath()).autosave;
+    if (mode == OutputMode::CopyAndPreview && !autosave) {
       static_cast<void>(launchPinnedCapture(
           image, renderedCaptureLogicalSize(captureCopy, image.size()),
           true, PinLifetime::Timed, result.error, launcher, log.recentId));
@@ -4155,21 +4157,21 @@ void CaptureEditor::finish(OutputMode mode) {
                          : error;
       return;
     }
-    if (mode == OutputMode::Copy || mode == OutputMode::Both) {
+    if (mode == OutputMode::Copy || mode == OutputMode::Both || autosave) {
       if (!copyPngFileToClipboard(exportPath, error)) {
         QFile::remove(exportPath);
         result.error = error;
         return;
       }
     }
-    if (mode == OutputMode::Save || mode == OutputMode::Both) {
+    if (mode == OutputMode::Save || mode == OutputMode::Both || autosave) {
       result.saved = moveSnapshotToScreenshots(exportPath, error, appSlug);
       if (result.saved.isEmpty()) {
         QFile::remove(exportPath);
         result.error = error;
         return;
       }
-      if (savedPreview) {
+      if (savedPreview || autosave) {
         const QString preview = launchPinnedCapture(
             image, renderedCaptureLogicalSize(captureCopy, image.size()), false,
             PinLifetime::Timed, result.error, launcher, log.recentId, result.saved);
