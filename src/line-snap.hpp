@@ -98,13 +98,14 @@ struct Snapped {
 };
 
 /**
- * Snaps the edges in `edges`. The pull around each line reaches about half
- * way to its nearest neighbouring line, from 6 to 32 screen pixels, so a lone
- * border grabs from far while dense rules stay precise. Compositor edges
- * always pull at full reach and win a tie with a line read from pixels. `velocity` is the
- * pointer's motion in native pixels per millisecond; only `moving` edges
- * follow it. Heading toward a line reaches for it early, a fast flick glides
- * past, and a held line lets go as soon as the pointer pulls away from it.
+ * Snaps the edges in `edges`. A line pulls an edge heading toward it from
+ * up to 20 screen pixels, or from 35% of the gap to its nearest neighbour
+ * where lines are dense; an edge resting or sliding along is pulled from
+ * only 4, so it can be parked between lines. Compositor edges always pull
+ * at the full reach and win a tie with a line read from pixels.
+ * `velocity` is the pointer's motion in native pixels per millisecond; only
+ * `moving` edges follow it. A fast flick is pulled far less, and a held line
+ * lets go after 2 pixels of deliberate travel away from it.
  */
 [[nodiscard]] Snapped snapRect(const LineMap &map, const QRectF &rect,
                                unsigned edges, unsigned moving,

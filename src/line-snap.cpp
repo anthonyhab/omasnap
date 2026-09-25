@@ -36,18 +36,22 @@ constexpr int kClusterGap = 3;
 // Past this the segment lists cost more than the feature is worth.
 constexpr qint64 kMaximumPixels = 40'000'000;
 
-// Pull, in screen pixels.
-constexpr qreal kPullMinimum = 6.0;
-constexpr qreal kPullMaximum = 32.0;
-// A line's pull reaches this far toward its nearest neighbour.
-constexpr qreal kPullShare = 0.45;
-constexpr qreal kTowardBoost = 1.25;
-constexpr qreal kHeldBoost = 1.35;
+// Pull, in screen pixels. The full pull only applies while an edge heads
+// toward a line; resting or sliding along, a line reaches just
+// kPullMinimum, so an edge can be parked between two lines.
+constexpr qreal kPullMinimum = 4.0;
+constexpr qreal kPullMaximum = 20.0;
+// Among neighbouring lines, each pulls across this share of the gap.
+constexpr qreal kPullShare = 0.35;
+// A held line resists wobble a little, and lets go after this much travel
+// away from it.
+constexpr qreal kHeldBoost = 1.2;
+constexpr qreal kReleaseTravel = 2.0;
 // Screen pixels per millisecond: above the first a pass is a flick, above
 // the second a held edge is being pulled off deliberately.
 constexpr qreal kFlickSpeed = 2.5;
 constexpr qreal kFlickDamping = 0.35;
-constexpr qreal kReleaseSpeed = 0.25;
+constexpr qreal kReleaseSpeed = 0.05;
 
 // Fit and step score the middle of a side, clear of rounded corners.
 constexpr qreal kCentralInset = 0.15;
@@ -277,27 +281,27 @@ std::optional<qreal> snapEdge(const LineMap &map, Qt::Orientation orientation,
   for (qsizetype index = 0; index < lines.size(); ++index) {
     const qreal target = lines.at(index).outer(lowEdge);
     const qreal distance = std::abs(target - position);
-    qreal gap = 2.0 * pullMaximum;
+    // A lone line pulls at the full reach; neighbours share the space.
+    qreal gap = std::numeric_limits<qreal>::max();
     if (index > 0)
       gap = std::min(gap, target - lines.at(index - 1).outer(lowEdge));
     if (index + 1 < lines.size())
       gap = std::min(gap, lines.at(index + 1).outer(lowEdge) - target);
     const bool anchored = lines.at(index).anchored;
-    qreal pull = anchored
-                     ? pullMaximum
-                     : std::clamp(kPullShare * gap, pullMinimum, pullMaximum);
-    const qreal toward = (target - position) * velocity;
+    const qreal reachFull =
+        anchored ? pullMaximum
+                 : std::clamp(kPullShare * gap, pullMinimum, pullMaximum);
+    const bool approaching = (target - position) * velocity > 0.0;
+    qreal pull = pullMinimum;
     if (held && std::abs(*held - target) < 0.5) {
-      // Moving off the line the edge sits on is intent; everything else
-      // (a wobble, a pause, drifting along it) keeps it held.
+      // Moving off the line the edge sits on is intent: a couple of pixels
+      // of travel away and it lets go. A pause or a wobble keeps it held.
       const bool leaving = (position - target) * velocity > 0.0;
-      pull = leaving && speed > kReleaseSpeed ? std::min(pull, pullMinimum)
-                                              : pull * kHeldBoost;
-    } else {
-      if (toward > 0.0)
-        pull *= kTowardBoost;
-      if (speed > kFlickSpeed)
-        pull *= kFlickDamping;
+      pull = leaving && speed > kReleaseSpeed
+                 ? kReleaseTravel * nativePerScreen
+                 : reachFull * kHeldBoost;
+    } else if (approaching) {
+      pull = speed > kFlickSpeed ? reachFull * kFlickDamping : reachFull;
     }
     if (distance > pull)
       continue;

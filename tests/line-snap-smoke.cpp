@@ -127,40 +127,43 @@ bool runLineSnapSmoke(QString &error) {
     }
   }
 
-  // A lone line pulls from far: its nearest neighbour (the panel, 140 px
-  // away) is past the cap, so its pull is the full 0.45 * 64.
-  if (leftEdge(*map, 225) != 200 || leftEdge(*map, 232) != 232) {
-    error = QStringLiteral("a lone line's pull is not about 29 px");
+  // Heading toward a lone line, it pulls from the full 20 px; its nearest
+  // neighbour (the panel, 140 px away) is too far to share the space.
+  if (leftEdge(*map, 218, -0.5) != 200 || leftEdge(*map, 222, -0.5) != 222) {
+    error = QStringLiteral("a lone line's approach pull is not 20 px");
     return false;
   }
-  // Heading toward it reaches further; a flick glides past.
-  if (leftEdge(*map, 232, -0.5) != 200) {
-    error = QStringLiteral("moving toward a line did not reach it early");
+  // Resting or moving away, it only reaches 4 px: an edge can be parked
+  // between lines.
+  if (leftEdge(*map, 203) != 200 || leftEdge(*map, 206) != 206 ||
+      leftEdge(*map, 206, 0.5) != 206) {
+    error = QStringLiteral("a resting edge was pulled from past 4 px");
     return false;
   }
-  if (leftEdge(*map, 215, -5.0) != 215) {
+  if (leftEdge(*map, 210, -5.0) != 210) {
     error = QStringLiteral("a fast flick was caught by a line");
     return false;
   }
-  // Held, it survives a pause; pulled off, it lets go at once.
-  if (leftEdge(*map, 236, 0.0, 200.0) != 200) {
+  // Held, it survives a pause; two pixels of travel away and it lets go.
+  if (leftEdge(*map, 215, 0.0, 200.0) != 200) {
     error = QStringLiteral("a held line let go without being pulled");
     return false;
   }
-  if (leftEdge(*map, 208, 1.0, 200.0) != 208) {
+  if (leftEdge(*map, 203, 0.1, 200.0) != 203) {
     error = QStringLiteral("a held line did not release when pulled off");
     return false;
   }
 
-  // Dense rules share the space between them: 20 px apart, a pull of 9.
+  // Dense rules share the space between them: 20 px apart, a pull of 7.
   const auto rules = LineMap::build(ruledFrame(20), 1.0);
   const auto ruled = [&](qreal x) {
     return linesnap::snapRect(*rules, QRectF(QPointF(x, 100), QPointF(700, 500)),
-                              linesnap::Left, linesnap::Left, {}, {}, 1.0, 16)
+                              linesnap::Left, linesnap::Left, {-0.5, 0}, {},
+                              1.0, 16)
         .rect.left();
   };
-  if (ruled(126) != 120 || ruled(130) != 130) {
-    error = QStringLiteral("dense rules pulled from past half their spacing");
+  if (ruled(126) != 120 || ruled(128) != 128) {
+    error = QStringLiteral("dense rules pulled from past their share");
     return false;
   }
 

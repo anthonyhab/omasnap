@@ -6177,10 +6177,12 @@ void CaptureEditor::mouseDoubleClickEvent(QMouseEvent *event) {
 }
 
 void CaptureEditor::mousePressEvent(QMouseEvent *event) {
-  // Snap memory and pointer motion belong to one drag.
+  // Snap memory and pointer motion belong to one drag. Motion is measured
+  // from the press, so the first move already knows where it is heading.
   snapHeld_ = {};
   pointerVelocity_ = {};
-  lastPointerTime_ = -1;
+  lastPointer_ = event->position();
+  lastPointerTime_ = static_cast<qint64>(event->timestamp());
   repositioning_ = false;
   if (phase_ == Phase::Export || busy_ || capturePending_)
     return;
