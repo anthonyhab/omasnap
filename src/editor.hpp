@@ -151,6 +151,7 @@ protected:
   bool eventFilter(QObject *watched, QEvent *event) override;
   void closeEvent(QCloseEvent *event) override;
   void keyPressEvent(QKeyEvent *event) override;
+  bool focusNextPrevChild(bool next) override;
   void keyReleaseEvent(QKeyEvent *event) override;
   void enterEvent(QEnterEvent *event) override;
   void leaveEvent(QEvent *event) override;
@@ -405,6 +406,10 @@ public:
   [[nodiscard]] bool windowModeForTest() const { return windowMode_; }
   /// Whether clicks are inferred as window/fullscreen while drags stay areas.
   [[nodiscard]] bool smartModeForTest() const { return smartMode_; }
+  /// The aspect a dragged area is held to, as Tab cycles it. Test accessor.
+  [[nodiscard]] QString regionAspectLabelForTest() const {
+    return regionAspectLabel();
+  }
   /// Where the image is drawn on screen right now (widget pixels), and the
   /// annotation-space-to-widget scale. Test accessor: lets a test compute
   /// exact click/expectation points from real geometry instead of hand math.
@@ -490,6 +495,8 @@ private:
   /// independent of the image, so the two can never overlap.
   [[nodiscard]] QSizeF windowLegendSize() const;
   [[nodiscard]] QVector<QPair<QString, QString>> captureHotkeyEntries() const;
+  [[nodiscard]] QString regionAspectLabel() const;
+  void cycleRegionAspect(bool forward);
   mutable int legendWidth_ = -1;
   mutable QSizeF legendSize_;
   [[nodiscard]] qreal toolbarTop() const;
@@ -824,6 +831,8 @@ private:
   /// pointer, or the whole monitor when no window is there.
   bool smartMode_ = false;
   bool windowMode_ = false;
+  /// Index into the region aspects Tab cycles: free, 1:1, 3:4, 16:9.
+  int regionAspect_ = 0;
   BackgroundStyle backgroundStyle_ = BackgroundStyle::None;
   bool imageShadow_ = true;
   CanvasBoundaryMode canvasBoundaryMode_ = CanvasBoundaryMode::Framed;

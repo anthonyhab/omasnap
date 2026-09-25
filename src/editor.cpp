@@ -54,6 +54,7 @@
 #include <QWheelEvent>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <utility>
@@ -2087,14 +2088,64 @@ void CaptureEditor::applyCustomColor(const QPointF &position) {
   update();
 }
 
+namespace {
+struct RegionAspect {
+  const char *label;
+  qreal width;
+  qreal height;
+};
+// Tab cycles these in the select phase; a zero width means freeform.
+constexpr std::array<RegionAspect, 4> kRegionAspects{{
+    {"Free", 0, 0}, {"1:1", 1, 1}, {"3:4", 3, 4}, {"16:9", 16, 9}}};
+} // namespace
+
 QRectF CaptureEditor::normalizedSelection(const QPointF &first,
                                           const QPointF &second) const {
   const QRectF bounds(QPointF(), QSizeF(width(), height()));
   const QPointF a(std::clamp(first.x(), bounds.left(), bounds.right()),
                   std::clamp(first.y(), bounds.top(), bounds.bottom()));
+  const RegionAspect &aspect = kRegionAspects.at(regionAspect_);
+  if (aspect.width > 0 && !scrollMode_) {
+    // Grow from the anchor toward the pointer along whichever axis reaches
+    // further, then shrink until the locked frame fits the screen.
+    const qreal ratio = aspect.width / aspect.height;
+    const qreal dx = second.x() - a.x();
+    const qreal dy = second.y() - a.y();
+    const qreal maxWidth = dx < 0 ? a.x() - bounds.left() : bounds.right() - a.x();
+    const qreal maxHeight = dy < 0 ? a.y() - bounds.top() : bounds.bottom() - a.y();
+    const qreal w = std::min({std::max(std::abs(dx), std::abs(dy) * ratio),
+                              maxWidth, maxHeight * ratio});
+    const qreal h = w / ratio;
+    return QRectF(a, QPointF(a.x() + (dx < 0 ? -w : w),
+                             a.y() + (dy < 0 ? -h : h)))
+        .normalized();
+  }
   const QPointF b(std::clamp(second.x(), bounds.left(), bounds.right()),
                   std::clamp(second.y(), bounds.top(), bounds.bottom()));
   return QRectF(a, b).normalized();
+}
+
+QString CaptureEditor::regionAspectLabel() const {
+  return QString::fromLatin1(kRegionAspects.at(regionAspect_).label);
+}
+
+void CaptureEditor::cycleRegionAspect(bool forward) {
+  const int count = static_cast<int>(kRegionAspects.size());
+  regionAspect_ = (regionAspect_ + (forward ? 1 : count - 1)) % count;
+  if (dragging_)
+    selection_ = normalizedSelection(dragStart_, cursor_);
+  setStatus(regionAspect_ == 0
+                ? QStringLiteral("Free area · Tab locks an aspect ratio")
+                : QStringLiteral("%1 area · Tab cycles aspect ratios")
+                      .arg(regionAspectLabel()));
+  update();
+}
+
+bool CaptureEditor::focusNextPrevChild(bool next) {
+  // Tab cycles region aspects while selecting; it never moves focus there.
+  if (phase_ == Phase::Select)
+    return false;
+  return QWidget::focusNextPrevChild(next);
 }
 
 QSizeF CaptureEditor::windowLegendSize() const {
@@ -4490,6 +4541,13 @@ void CaptureEditor::keyPressEvent(QKeyEvent *event) {
     }
     if (event->key() == Qt::Key_S && !event->modifiers()) {
       setScrollMode(!scrollMode_);
+      return;
+    }
+    if ((event->key() == Qt::Key_Tab || event->key() == Qt::Key_Backtab) &&
+        !windowMode_ && !scrollMode_) {
+      cycleRegionAspect(event->key() == Qt::Key_Tab &&
+                        !event->modifiers().testFlag(Qt::ShiftModifier));
+      event->accept();
       return;
     }
     QWidget::keyPressEvent(event);
@@ -7148,6 +7206,10 @@ QVector<QPair<QString, QString>> CaptureEditor::captureHotkeyEntries() const {
                {QStringLiteral("R"), QStringLiteral("Last region")},
                {QStringLiteral("S"), QStringLiteral("Scrolling region")},
                {QStringLiteral("Esc"), QStringLiteral("Close")}};
+  if (!scrollMode_ && !windowMode_)
+    hotkeys.insert(hotkeys.size() - 1,
+                   {QStringLiteral("Tab"),
+                    QStringLiteral("Aspect: %1").arg(regionAspectLabel())});
   hotkeys.insert(hotkeys.size() - 1,
                  {QStringLiteral("E / A"),
                   quickOutputMode_ == QuickOutputMode::None
