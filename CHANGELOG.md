@@ -7,6 +7,13 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 
 ### Added
 
+- Selection edges and crop handles snap to straight lines in the captured
+  frame, with dashed guides. The pull widens around lone lines, tightens among
+  dense ones, and follows the pointer's heading; hold `Alt` to place edges
+  freely, or `Space` to move the region mid-drag. In the editor,
+  `Alt+=` / `Alt+-` grow or shrink the crop to the next edge (`Shift` for
+  height, `Ctrl` for one pixel), and `Alt+F` fits a rough crop to its content.
+
 - `Tab` cycles region selection between free, square, 3:4, and 16:9 while
   capturing; `Shift+Tab` cycles back. The capture guide shows the active aspect.
 

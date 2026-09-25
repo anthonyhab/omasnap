@@ -87,6 +87,8 @@ add_library(omasnap-core STATIC
   src/stroke-smoothing.cpp
   src/stroke-smoothing.hpp
   ${PROTOCOL_SOURCES}
+  src/line-snap.cpp
+  src/line-snap.hpp
   src/editor.cpp
   src/editor-save-as.cpp
   src/editor.hpp
@@ -171,6 +173,8 @@ qt_add_executable(omasnap-smoke
   tests/transform-smoke.hpp
   tests/cut-smoke.cpp
   tests/cut-smoke.hpp
+  tests/line-snap-smoke.cpp
+  tests/line-snap-smoke.hpp
   tests/cut-mapping-smoke.cpp
   tests/cut-mapping-smoke.hpp
   tests/palette-config-smoke.cpp

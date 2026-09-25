@@ -12,6 +12,7 @@
 #include "chrome-theme-smoke.hpp"
 #include "cut-mapping-smoke.hpp"
 #include "cut-smoke.hpp"
+#include "line-snap-smoke.hpp"
 #include "editor.hpp"
 #include "shortcut-guide.hpp"
 #include "selection-repaint-smoke.hpp"
@@ -13854,6 +13855,13 @@ int main(int argc, char **argv) {
   QString cutError;
   if (!runCutSmoke(cutError)) {
     qWarning().noquote() << "cut smoke failed:" << cutError;
+    return EXIT_FAILURE;
+  }
+
+  QString lineSnapError;
+  if (!runLineSnapSmoke(lineSnapError) ||
+      !runLineSnapEditorSmoke(application, lineSnapError)) {
+    qWarning().noquote() << "line snap smoke failed:" << lineSnapError;
     return EXIT_FAILURE;
   }
 

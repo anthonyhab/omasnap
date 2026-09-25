@@ -4,6 +4,7 @@
 #include "background-config.hpp"
 #include "capture.hpp"
 #include "cut.hpp"
+#include "line-snap.hpp"
 #include "overlay-chrome.hpp"
 #include "palette-config.hpp"
 #include "recent-snaps.hpp"
@@ -410,6 +411,18 @@ public:
   [[nodiscard]] QString regionAspectLabelForTest() const {
     return regionAspectLabel();
   }
+  /// Whether the edge-snap index for the current source is ready. Test
+  /// accessor: lets a test wait for the worker before dragging.
+  [[nodiscard]] bool lineMapReadyForTest() const {
+    return lineMap_ && lineMapKey_ == capture_.source.cacheKey();
+  }
+  /// Snap guide positions in preview coordinates. Test accessor.
+  [[nodiscard]] QVector<qreal> snapGuideXsForTest() const {
+    return snapGuideXs_;
+  }
+  [[nodiscard]] QVector<qreal> snapGuideYsForTest() const {
+    return snapGuideYs_;
+  }
   /// Where the image is drawn on screen right now (widget pixels), and the
   /// annotation-space-to-widget scale. Test accessor: lets a test compute
   /// exact click/expectation points from real geometry instead of hand math.
@@ -595,6 +608,25 @@ private:
                   const QString &status);
   /// Leaves the select phase with a drawn region: edit it, or scroll it.
   void commitRegion(const QRectF &region, const QString &editStatus);
+  /// The current source's edge index, starting a background build when it
+  /// is missing or stale. Null until that build lands.
+  const LineMap *lineMap();
+  /// Native source pixels per preview unit on each axis.
+  [[nodiscard]] QSizeF sourceScale() const;
+  /// A select-phase drag rect with its edges snapped to the frame, unless
+  /// Alt bypasses it or an aspect ratio is locked.
+  QRectF snapDragSelection(const QRectF &widgetRect,
+                           Qt::KeyboardModifiers modifiers);
+  /// Keyboard crop: both edges of one axis to the next edge, or by one
+  /// native pixel when `precise`.
+  void stepCrop(Qt::Orientation axis, bool grow, bool precise);
+  /// Keyboard crop: all four edges onto the element the crop surrounds.
+  void fitCropToEdges();
+  void setSnapGuides(const linesnap::Snapped &snapped, QSizeF scale);
+  void clearSnapGuides();
+  [[nodiscard]] QVector<QLineF> snapGuideLines() const;
+  [[nodiscard]] QRegion snapGuideDamage() const;
+  void paintSnapGuides(QPainter &painter) const;
   /// Whether there is a live screen behind this capture to re-select from
   /// (not a file, clipboard image or stitched result).
   [[nodiscard]] bool hasLiveScreen() const;
@@ -815,6 +847,30 @@ private:
   std::optional<QPointF> pendingHighlighterProbePoint_;
   quint64 highlighterProbeGeneration_ = 0;
   QFutureWatcher<HighlighterProbeResult> highlighterProbeWatcher_;
+  // Edge snapping. The index describes the source whose cacheKey is
+  // lineMapKey_; a build for lineMapBuildKey_ may be in flight.
+  std::shared_ptr<const LineMap> lineMap_;
+  qint64 lineMapKey_ = 0;
+  qint64 lineMapBuildKey_ = 0;
+  QFutureWatcher<std::shared_ptr<const LineMap>> lineMapWatcher_;
+  /// Alt+F pressed before the index landed; fit once it does.
+  bool lineMapFitPending_ = false;
+  // Which line each edge is snapped to, so a snap holds against wobble and
+  // lets go when pulled off. Cleared at every press and release.
+  linesnap::Held snapHeld_{};
+  // Smoothed pointer velocity in widget pixels per millisecond: the snap
+  // reaches toward lines the pointer heads for and lets flicks glide.
+  QPointF pointerVelocity_;
+  QPointF lastPointer_;
+  qint64 lastPointerTime_ = -1;
+  void trackPointerVelocity(const QPointF &position, qint64 timestamp);
+  /// Space held mid-drag moves the whole selection instead of sizing it.
+  bool repositioning_ = false;
+  // Snapped edges in preview coordinates, drawn as guide lines. Keyboard
+  // crops flash theirs until guideTimer_ clears them.
+  QVector<qreal> snapGuideXs_;
+  QVector<qreal> snapGuideYs_;
+  QTimer snapGuideTimer_;
   HighlighterMode highlighterMode_ = HighlighterMode::Snap;
   // Cut tool live-drag state. cutDragStart_/cutBandLo_/cutBandHi_ and
   // liveCut_.orientation are in annotation space (selection-relative logical

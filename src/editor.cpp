@@ -816,6 +816,31 @@ CaptureEditor::CaptureEditor(CaptureData capture, CaptureMode mode,
   connect(&highlighterProbeWatcher_,
           &QFutureWatcher<HighlighterProbeResult>::finished, this,
           [this] { completeHighlighterProbe(); });
+  connect(&lineMapWatcher_,
+          &QFutureWatcher<std::shared_ptr<const LineMap>>::finished,
+          this, [this] {
+            const qint64 key = lineMapBuildKey_;
+            lineMapBuildKey_ = 0;
+            // A cut or a new capture may have replaced the source meanwhile;
+            // that result describes pixels nobody is looking at any more.
+            if (key != capture_.source.cacheKey()) {
+              lineMap();
+              return;
+            }
+            lineMap_ = lineMapWatcher_.result();
+            lineMapKey_ = key;
+            if (lineMapFitPending_) {
+              lineMapFitPending_ = false;
+              fitCropToEdges();
+            }
+          });
+  snapGuideTimer_.setSingleShot(true);
+  snapGuideTimer_.setInterval(900);
+  connect(&snapGuideTimer_, &QTimer::timeout, this, [this] {
+    clearSnapGuides();
+    update();
+  });
+  lineMap();
   if (!backgroundConfig_.imagePath.isEmpty()) {
     const QString backdropPath = backgroundConfig_.imagePath;
     backdropWatcher_.setFuture(QtConcurrent::run([backdropPath] {
@@ -966,6 +991,7 @@ CaptureEditor::CaptureEditor(CaptureData capture, CaptureMode mode,
             pristineLogicalSize_ = capture_.previewSize;
             cuts_.clear();
             redactionBaseStale_ = true;
+            lineMap();
             switch (pendingMode_) {
             case CaptureMode::Smart:
               smartMode_ = true;
@@ -2139,6 +2165,314 @@ void CaptureEditor::cycleRegionAspect(bool forward) {
                 : QStringLiteral("%1 area · Tab cycles aspect ratios")
                       .arg(regionAspectLabel()));
   update();
+}
+
+namespace {
+// Keyboard steps that find no edge move by this many logical pixels.
+constexpr qreal kCropFallbackStep = 24.0;
+// Matches the crop handles' own minimum.
+constexpr qreal kMinimumCrop = 16.0;
+// Pointer velocity smoothing: new samples weigh this much.
+constexpr qreal kVelocitySmoothing = 0.5;
+} // namespace
+
+QSizeF CaptureEditor::sourceScale() const {
+  if (capture_.source.isNull() || capture_.previewSize.isEmpty())
+    return {1.0, 1.0};
+  return {capture_.source.width() /
+              static_cast<qreal>(capture_.previewSize.width()),
+          capture_.source.height() /
+              static_cast<qreal>(capture_.previewSize.height())};
+}
+
+const LineMap *CaptureEditor::lineMap() {
+  const QImage source = capture_.source;
+  if (source.isNull())
+    return nullptr;
+  const qint64 key = source.cacheKey();
+  if (lineMap_ && lineMapKey_ == key)
+    return lineMap_.get();
+  if (lineMapBuildKey_ == 0) {
+    lineMapBuildKey_ = key;
+    const qreal scale = sourceScale().width();
+    lineMapWatcher_.setFuture(QtConcurrent::run(
+        [source, scale] { return LineMap::build(source, scale); }));
+  }
+  return nullptr;
+}
+
+void CaptureEditor::trackPointerVelocity(const QPointF &position,
+                                         qint64 timestamp) {
+  if (lastPointerTime_ >= 0 && timestamp > lastPointerTime_) {
+    const qreal elapsed =
+        std::min<qreal>(static_cast<qreal>(timestamp - lastPointerTime_), 100.0);
+    const QPointF sample = (position - lastPointer_) / elapsed;
+    pointerVelocity_ = pointerVelocity_ * (1.0 - kVelocitySmoothing) +
+                       sample * kVelocitySmoothing;
+  } else if (lastPointerTime_ < 0) {
+    pointerVelocity_ = {};
+  }
+  lastPointer_ = position;
+  lastPointerTime_ = timestamp;
+}
+
+QRectF CaptureEditor::snapDragSelection(const QRectF &widgetRect,
+                                        Qt::KeyboardModifiers modifiers) {
+  clearSnapGuides();
+  const bool aspectLocked =
+      kRegionAspects.at(regionAspect_).width > 0 && !scrollMode_;
+  if (aspectLocked || modifiers.testFlag(Qt::AltModifier) ||
+      widgetRect.isEmpty()) {
+    snapHeld_ = {};
+    return widgetRect;
+  }
+  const LineMap *map = lineMap();
+  if (!map)
+    return widgetRect;
+  const QSizeF scale = sourceScale();
+  const QRectF preview = mapWidgetToPreview(widgetRect).normalized();
+  // Velocity and the moving corner, carried through the monitor transform
+  // so a rotated output still leads with the right edges.
+  const QPointF cursorPreview =
+      mapWidgetToPreview(QRectF(cursor_, QSizeF())).topLeft();
+  const QPointF previewVelocity =
+      cursorPreview -
+      mapWidgetToPreview(QRectF(cursor_ - pointerVelocity_, QSizeF()))
+          .topLeft();
+  const QPointF nativeVelocity(previewVelocity.x() * scale.width(),
+                               previewVelocity.y() * scale.height());
+  unsigned moving = 0;
+  if (repositioning_) {
+    moving = linesnap::All;
+  } else {
+    moving |= std::abs(cursorPreview.x() - preview.left()) <
+                      std::abs(cursorPreview.x() - preview.right())
+                  ? linesnap::Left
+                  : linesnap::Right;
+    moving |= std::abs(cursorPreview.y() - preview.top()) <
+                      std::abs(cursorPreview.y() - preview.bottom())
+                  ? linesnap::Top
+                  : linesnap::Bottom;
+  }
+  // The overlay shows the frame at its logical size, so a screen pixel is
+  // one preview unit.
+  linesnap::Snapped snapped = linesnap::snapRect(
+      *map, sourceRect(preview), linesnap::All, moving, nativeVelocity,
+      snapHeld_, scale.width(), 2.0 * scale.width());
+  if (repositioning_) {
+    // A moving selection keeps its size: take the nearer catch on each
+    // axis (low or high side) and slide the whole rect by it.
+    const QRectF native = sourceRect(preview);
+    struct Catch {
+      qreal shift = 0.0;
+      std::optional<qreal> guide;
+    };
+    const auto nearer = [](std::optional<qreal> low, qreal lowFrom,
+                           std::optional<qreal> high, qreal highFrom) {
+      Catch fromLow, fromHigh;
+      if (low)
+        fromLow = {*low - lowFrom, *low};
+      if (high)
+        fromHigh = {*high - highFrom, *high};
+      if (low && high)
+        return std::abs(fromLow.shift) <= std::abs(fromHigh.shift) ? fromLow
+                                                                   : fromHigh;
+      return low ? fromLow : fromHigh;
+    };
+    const Catch x = nearer(snapped.held[0], native.left(), snapped.held[2],
+                           native.right());
+    const Catch y = nearer(snapped.held[1], native.top(), snapped.held[3],
+                           native.bottom());
+    snapped.rect = native.translated(x.shift, y.shift);
+    snapped.xs.clear();
+    snapped.ys.clear();
+    if (x.guide)
+      snapped.xs.push_back(*x.guide);
+    if (y.guide)
+      snapped.ys.push_back(*y.guide);
+  }
+  snapHeld_ = snapped.held;
+  setSnapGuides(snapped, scale);
+  const QRectF back(snapped.rect.x() / scale.width(),
+                    snapped.rect.y() / scale.height(),
+                    snapped.rect.width() / scale.width(),
+                    snapped.rect.height() / scale.height());
+  return mapPreviewToWidget(back).normalized();
+}
+
+void CaptureEditor::stepCrop(Qt::Orientation axis, bool grow, bool precise) {
+  if (phase_ != Phase::Edit || selection_.isEmpty() ||
+      capture_.previewSize.isEmpty())
+    return;
+  const QSizeF scale = sourceScale();
+  const QRectF native = sourceRect(selection_);
+  const bool horizontal = axis == Qt::Horizontal;
+  const qreal perLogical = horizontal ? scale.width() : scale.height();
+  const LineMap *index = precise ? nullptr : lineMap();
+  linesnap::Snapped stepped{native, {}, {}, {}};
+  if (index) {
+    stepped = linesnap::stepAxis(
+        *index, native, axis, grow,
+        horizontal ? index->width() : index->height(),
+        kCropFallbackStep * perLogical, kMinimumCrop * perLogical);
+  } else {
+    // One native pixel is the finest crop the export can express; without
+    // an index yet, fall back to the plain step.
+    const qreal step = precise ? 1.0 : kCropFallbackStep * perLogical;
+    const qreal delta = grow ? step : -step;
+    const qreal extent =
+        horizontal ? capture_.source.width() : capture_.source.height();
+    const qreal low =
+        std::clamp((horizontal ? native.left() : native.top()) - delta, 0.0,
+                   extent);
+    const qreal high =
+        std::clamp((horizontal ? native.right() : native.bottom()) + delta,
+                   0.0, extent);
+    if (high - low >= kMinimumCrop * perLogical) {
+      if (horizontal) {
+        stepped.rect.setLeft(low);
+        stepped.rect.setRight(high);
+      } else {
+        stepped.rect.setTop(low);
+        stepped.rect.setBottom(high);
+      }
+    }
+  }
+  const QRectF updated(stepped.rect.x() / scale.width(),
+                       stepped.rect.y() / scale.height(),
+                       stepped.rect.width() / scale.width(),
+                       stepped.rect.height() / scale.height());
+  const QRectF bounded =
+      updated.intersected(QRectF(QPointF(), capture_.previewSize));
+  const QSize nativeSize = sourceRect(bounded).toAlignedRect().size();
+  if (bounded == selection_ || bounded.isEmpty()) {
+    setStatus(grow ? QStringLiteral("Crop already reaches the frame")
+                   : QStringLiteral("Crop cannot shrink further"));
+    update();
+    return;
+  }
+  commitCrop(bounded);
+  viewZoom_ = std::min(viewZoom_, maxViewZoom());
+  viewOffset_ = {};
+  setSnapGuides(stepped, scale);
+  snapGuideTimer_.start();
+  setStatus(QStringLiteral("Crop %1×%2 · Alt+= / Alt+- step to the next edge "
+                           "· Shift for height · Ctrl for 1 px")
+                .arg(nativeSize.width())
+                .arg(nativeSize.height()));
+  update();
+}
+
+void CaptureEditor::fitCropToEdges() {
+  if (phase_ != Phase::Edit || selection_.isEmpty())
+    return;
+  const LineMap *index = lineMap();
+  if (!index) {
+    lineMapFitPending_ = true;
+    setStatus(QStringLiteral("Finding edges…"));
+    update();
+    return;
+  }
+  const QSizeF scale = sourceScale();
+  const linesnap::Snapped fitted =
+      linesnap::fitRect(*index, sourceRect(selection_),
+                        kMinimumCrop * scale.width());
+  const QRectF updated(fitted.rect.x() / scale.width(),
+                       fitted.rect.y() / scale.height(),
+                       fitted.rect.width() / scale.width(),
+                       fitted.rect.height() / scale.height());
+  if (fitted.xs.isEmpty() && fitted.ys.isEmpty()) {
+    setStatus(QStringLiteral("No edges near the crop"));
+  } else if (updated == selection_) {
+    setStatus(QStringLiteral("Crop already fits its edges"));
+  } else {
+    commitCrop(updated);
+    viewZoom_ = std::min(viewZoom_, maxViewZoom());
+    viewOffset_ = {};
+    setSnapGuides(fitted, scale);
+    snapGuideTimer_.start();
+    const QSize nativeSize = sourceRect(updated).toAlignedRect().size();
+    setStatus(QStringLiteral("Crop fitted to %1×%2 · Ctrl+Z undoes")
+                  .arg(nativeSize.width())
+                  .arg(nativeSize.height()));
+  }
+  update();
+}
+
+void CaptureEditor::setSnapGuides(const linesnap::Snapped &snapped,
+                                  QSizeF scale) {
+  snapGuideXs_.clear();
+  snapGuideYs_.clear();
+  for (const qreal x : snapped.xs)
+    snapGuideXs_.push_back(x / scale.width());
+  for (const qreal y : snapped.ys)
+    snapGuideYs_.push_back(y / scale.height());
+}
+
+void CaptureEditor::clearSnapGuides() {
+  snapGuideXs_.clear();
+  snapGuideYs_.clear();
+}
+
+QVector<QLineF> CaptureEditor::snapGuideLines() const {
+  QVector<QLineF> lines;
+  if (snapGuideXs_.isEmpty() && snapGuideYs_.isEmpty())
+    return lines;
+  // Guides run the full overlay so the line they caught is easy to follow.
+  // The select phase maps through the monitor transform; the editor through
+  // the frame on screen, which a crop drag holds still until release.
+  const auto toWidget = [this](const QRectF &preview) {
+    if (phase_ == Phase::Select)
+      return mapPreviewToWidget(preview);
+    const bool cropDrag =
+        dragging_ && interaction_ >= Interaction::CropTopLeft;
+    const QRectF frame =
+        cropDrag ? cropDragImageRect_ : sourceFrameWidgetRect();
+    const QRectF crop = cropDrag ? originalSelection_ : selection_;
+    if (crop.width() <= 0.0 || crop.height() <= 0.0)
+      return QRectF();
+    const qreal sx = frame.width() / crop.width();
+    const qreal sy = frame.height() / crop.height();
+    return QRectF(frame.left() + (preview.left() - crop.left()) * sx,
+                  frame.top() + (preview.top() - crop.top()) * sy,
+                  preview.width() * sx, preview.height() * sy);
+  };
+  const QSizeF preview = capture_.previewSize;
+  const auto fullLine = [this](const QRectF &mapped) {
+    // A rotated monitor turns a vertical source line horizontal on screen.
+    if (mapped.width() <= mapped.height())
+      return QLineF(mapped.center().x(), 0, mapped.center().x(), height());
+    return QLineF(0, mapped.center().y(), width(), mapped.center().y());
+  };
+  for (const qreal x : snapGuideXs_)
+    lines.push_back(fullLine(toWidget(QRectF(x, 0, 0, preview.height()))));
+  for (const qreal y : snapGuideYs_)
+    lines.push_back(fullLine(toWidget(QRectF(0, y, preview.width(), 0))));
+  return lines;
+}
+
+QRegion CaptureEditor::snapGuideDamage() const {
+  QRegion damage;
+  for (const QLineF &line : snapGuideLines())
+    damage |= QRectF(line.p1(), line.p2())
+                  .normalized()
+                  .adjusted(-2, -2, 2, 2)
+                  .toAlignedRect();
+  return damage;
+}
+
+void CaptureEditor::paintSnapGuides(QPainter &painter) const {
+  const QVector<QLineF> lines = snapGuideLines();
+  if (lines.isEmpty())
+    return;
+  painter.save();
+  painter.setRenderHint(QPainter::Antialiasing, false);
+  QPen pen(chromeAlpha(chromeTheme().accent, 220), 1, Qt::DashLine);
+  pen.setCosmetic(true);
+  painter.setPen(pen);
+  for (const QLineF &line : lines)
+    painter.drawLine(line);
+  painter.restore();
 }
 
 bool CaptureEditor::focusNextPrevChild(bool next) {
@@ -4477,6 +4811,13 @@ void CaptureEditor::keyPressEvent(QKeyEvent *event) {
     return;
   }
   if (phase_ == Phase::Select) {
+    // Photoshop's marquee move: Space held mid-drag carries the selection
+    // with the pointer; releasing it goes back to sizing.
+    if (event->key() == Qt::Key_Space && dragging_ && !windowMode_) {
+      repositioning_ = true;
+      event->accept();
+      return;
+    }
     if (event->matches(QKeySequence::SelectAll)) {
       selectFullscreen();
       return;
@@ -4565,6 +4906,28 @@ void CaptureEditor::keyPressEvent(QKeyEvent *event) {
     setStatus(QStringLiteral("Cut cancelled"));
   }
 
+  // Alt stands in for Omarchy's Super in its window-resize keys: = grows,
+  // - shrinks, Shift turns it to the height, Ctrl makes it one pixel. Checked
+  // ahead of zoom, which claims the bare - and = here.
+  if (phase_ == Phase::Edit && !dragging_ && !textEditing() &&
+      event->modifiers().testFlag(Qt::AltModifier) &&
+      !event->modifiers().testFlag(Qt::MetaModifier)) {
+    const int key = event->key();
+    const bool grow = key == Qt::Key_Equal || key == Qt::Key_Plus;
+    const bool shrink = key == Qt::Key_Minus || key == Qt::Key_Underscore;
+    if (grow || shrink) {
+      stepCrop(event->modifiers().testFlag(Qt::ShiftModifier) ? Qt::Vertical
+                                                              : Qt::Horizontal,
+               grow, event->modifiers().testFlag(Qt::ControlModifier));
+      event->accept();
+      return;
+    }
+    if (key == Qt::Key_F) {
+      fitCropToEdges();
+      event->accept();
+      return;
+    }
+  }
   const bool redoShortcut = event->matches(QKeySequence::Redo) ||
                             (event->key() == Qt::Key_Y &&
                              event->modifiers().testFlag(Qt::ControlModifier));
@@ -4802,6 +5165,12 @@ void CaptureEditor::keyPressEvent(QKeyEvent *event) {
 
 void CaptureEditor::keyReleaseEvent(QKeyEvent *event) {
   modifiersSeen_ = true;
+  if (event->key() == Qt::Key_Space && !event->isAutoRepeat() &&
+      repositioning_) {
+    repositioning_ = false;
+    event->accept();
+    return;
+  }
   if (event->key() == Qt::Key_Shift &&
       (creationConstraintActive_ || resizeConstraintActive_)) {
     creationConstraintActive_ = false;
@@ -5298,7 +5667,13 @@ void CaptureEditor::mouseMoveEvent(QMouseEvent *event) {
   const QRegion oldPointerVisual = pointerMotionRegion(cursor_, &oldCanvas);
   const QRectF oldSelection = selection_;
   const int oldHoveredWindow = hoveredWindow_;
+  const QRegion oldGuides = snapGuideDamage();
+  const QPointF previousCursor = cursor_;
   cursor_ = event->position();
+  if (dragging_)
+    trackPointerVelocity(cursor_, static_cast<qint64>(event->timestamp()));
+  if (phase_ == Phase::Select && dragging_ && repositioning_)
+    dragStart_ += cursor_ - previousCursor;
   if (phase_ == Phase::Export)
     return;
   if (capturePending_)
@@ -5308,13 +5683,15 @@ void CaptureEditor::mouseMoveEvent(QMouseEvent *event) {
       trackRecentsHover();
     if (smartMode_) {
       if (dragging_)
-        selection_ = normalizedSelection(dragStart_, cursor_);
+        selection_ = snapDragSelection(normalizedSelection(dragStart_, cursor_),
+                                       event->modifiers());
       else
         hoveredWindow_ = recentsOpen_ ? -1 : windowAt(cursor_);
     } else if (windowMode_)
       hoveredWindow_ = recentsOpen_ ? -1 : windowAt(cursor_);
     else if (dragging_)
-      selection_ = normalizedSelection(dragStart_, cursor_);
+      selection_ = snapDragSelection(normalizedSelection(dragStart_, cursor_),
+                                     event->modifiers());
     if (!dragging_)
       updatePointerCursor();
   } else {
@@ -5364,6 +5741,36 @@ void CaptureEditor::mouseMoveEvent(QMouseEvent *event) {
             originalSelection_.top() + minimumCrop, 0.0, previewSize.height());
         updated.setBottom(
             std::clamp(sourceY, minBottom, previewSize.height()));
+      }
+      clearSnapGuides();
+      if (!event->modifiers().testFlag(Qt::AltModifier)) {
+        if (const LineMap *index = lineMap()) {
+          // Only the edges this handle drags snap; the opposite side stays
+          // exactly where the crop had it.
+          unsigned edges = 0;
+          if (handle == 0 || handle == 6 || handle == 7)
+            edges |= linesnap::Left;
+          if (handle == 2 || handle == 3 || handle == 4)
+            edges |= linesnap::Right;
+          if (handle == 0 || handle == 1 || handle == 2)
+            edges |= linesnap::Top;
+          if (handle == 4 || handle == 5 || handle == 6)
+            edges |= linesnap::Bottom;
+          const QSizeF scale = sourceScale();
+          const qreal previewPerScreen =
+              originalSelection_.width() / cropDragImageRect_.width();
+          const qreal nativePerScreen = previewPerScreen * scale.width();
+          const linesnap::Snapped snapped = linesnap::snapRect(
+              *index, sourceRect(updated), edges, edges,
+              pointerVelocity_ * nativePerScreen, snapHeld_, nativePerScreen,
+              minimumCrop * scale.width());
+          snapHeld_ = snapped.held;
+          setSnapGuides(snapped, scale);
+          updated = QRectF(snapped.rect.x() / scale.width(),
+                           snapped.rect.y() / scale.height(),
+                           snapped.rect.width() / scale.width(),
+                           snapped.rect.height() / scale.height());
+        }
       }
       const QPointF annotationDelta = selection_.topLeft() - updated.topLeft();
       if (!annotationDelta.isNull()) {
@@ -5641,6 +6048,7 @@ void CaptureEditor::mouseMoveEvent(QMouseEvent *event) {
       oldHoveredWindow != hoveredWindow_) {
     damage |= windowHoverDamage(oldHoveredWindow, hoveredWindow_);
   }
+  damage |= oldGuides | snapGuideDamage();
   queuePointerRepaint(damage);
 }
 
@@ -5659,6 +6067,11 @@ void CaptureEditor::mouseDoubleClickEvent(QMouseEvent *event) {
 }
 
 void CaptureEditor::mousePressEvent(QMouseEvent *event) {
+  // Snap memory and pointer motion belong to one drag.
+  snapHeld_ = {};
+  pointerVelocity_ = {};
+  lastPointerTime_ = -1;
+  repositioning_ = false;
   if (phase_ == Phase::Export || busy_ || capturePending_)
     return;
   if (!ocrResultText_.isEmpty())
@@ -6057,12 +6470,14 @@ void CaptureEditor::mouseReleaseEvent(QMouseEvent *event) {
   }
   if (capturePending_ || event->button() != Qt::LeftButton || !dragging_)
     return;
+  repositioning_ = false;
   if (phase_ == Phase::Select) {
     selection_ = normalizedSelection(dragStart_, event->position());
     dragging_ = false;
     const qreal selectedArea = selection_.width() * selection_.height();
     if (smartMode_ && (selectedArea < 20.0 || selection_.width() < 2.0 ||
                        selection_.height() < 2.0)) {
+      clearSnapGuides();
       selection_ = {};
       const int window = windowAt(event->position());
       if (window >= 0)
@@ -6073,6 +6488,10 @@ void CaptureEditor::mouseReleaseEvent(QMouseEvent *event) {
       update();
       return;
     }
+    // Click detection above reads the raw drag, so a click beside a line
+    // never snaps into a sliver-sized area.
+    selection_ = snapDragSelection(selection_, event->modifiers());
+    clearSnapGuides();
     if (selection_.width() >= 2 && selection_.height() >= 2) {
       // Remember the drawn region for this session, so R can bring it back
       // on the next capture. A convenience, so failing to write is no error.
@@ -6143,6 +6562,8 @@ void CaptureEditor::mouseReleaseEvent(QMouseEvent *event) {
     }
     const bool cropped = interaction_ >= Interaction::CropTopLeft;
     const bool changed = dragStartStateValid_ && dragChanged_;
+    if (cropped)
+      clearSnapGuides();
     if (changed) {
       if (cropped)
         commitCrop(selection_);
@@ -7210,6 +7631,12 @@ QVector<QPair<QString, QString>> CaptureEditor::captureHotkeyEntries() const {
     hotkeys.insert(hotkeys.size() - 1,
                    {QStringLiteral("Tab"),
                     QStringLiteral("Aspect: %1").arg(regionAspectLabel())});
+  if (!windowMode_) {
+    hotkeys.insert(hotkeys.size() - 1,
+                   {QStringLiteral("Space+drag"), QStringLiteral("Move area")});
+    hotkeys.insert(hotkeys.size() - 1,
+                   {QStringLiteral("Alt+drag"), QStringLiteral("Ignore edges")});
+  }
   hotkeys.insert(hotkeys.size() - 1,
                  {QStringLiteral("E / A"),
                   quickOutputMode_ == QuickOutputMode::None
@@ -7318,6 +7745,9 @@ QVector<QPair<QString, QString>> editorHotkeyEntries() {
           {QStringLiteral("C"), QStringLiteral("Marker")},
           {QStringLiteral("R / E"), QStringLiteral("Rectangle / Ellipse")},
           {QStringLiteral("X"), QStringLiteral("Cut out a band")},
+          {QStringLiteral("Alt+= / Alt+-"), QStringLiteral("Crop to next edge")},
+          {QStringLiteral("Alt+Shift+= / -"), QStringLiteral("Same, height")},
+          {QStringLiteral("Alt+F"), QStringLiteral("Fit crop to edges")},
           {QStringLiteral("T"), QStringLiteral("Text")},
           {QStringLiteral("Double click"), QStringLiteral("Edit text layer")},
           {QStringLiteral("1–8"), QStringLiteral("Color")},
@@ -7985,6 +8415,7 @@ void CaptureEditor::paintEvent(QPaintEvent *event) {
     paintEdit(painter);
     break;
   }
+  paintSnapGuides(painter);
   if (firstPaint) {
     firstPaintReported_ = true;
     startupTimingMark("first overlay paint completed");

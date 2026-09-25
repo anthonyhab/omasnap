@@ -20,6 +20,11 @@ preview keeps it on screen.
 - Smart selection by default: drag a freeform region, click a window to crop
   it, or click open monitor space for the full monitor. Explicit region,
   window, fullscreen, and scrolling-region modes remain available.
+- Edge snapping: selection edges and crop handles snap to the straight lines
+  in the frozen frame, with a pull that adapts to how crowded the lines are and
+  to where the pointer is heading. `Space` moves a region mid-drag. In the
+  editor, `Alt+=` / `Alt+-` step the crop out to the enclosing block or in to
+  the next one, and `Alt+F` fits a rough crop to what it surrounds.
 - Fresh captures save, copy to the clipboard, and show a floating preview for 10 seconds
   without taking keyboard focus. Hover for Pin, Edit, Copy, file drag, and Close
   controls. Use the pin button, `Ctrl+P`, `T` while hovered, or drag the preview to
@@ -453,7 +458,9 @@ controls to return focus from the live page.
 | Input | Action |
 |---|---|
 | Click | In smart mode, capture the window under the pointer, or the full monitor outside any window |
-| Drag | Select a region, with its native pixel size shown at the pointer |
+| Drag | Select a region, with its native pixel size shown at the pointer; each edge snaps to a straight line in the frame (window borders, cards, table rules) that runs along it, keeps a 1 px border inside, and shows a dashed guide. A lone line pulls from up to 32 px away, dense rules only up to half their spacing; heading toward a line reaches it early, a fast flick glides past, and pulling off a held line releases it |
+| `Space` + drag | Move the whole region instead of sizing it; it snaps as it goes |
+| `Alt` + drag | Place the region freely, without edge snapping |
 | `Tab` / `Shift+Tab` | Cycle the region's shape: free (default), square, 3:4, 16:9; works mid-drag |
 | `S` | Toggle scrolling-region mode |
 | `E` / `A` | Toggle annotation after capture; the capture guide shows on/off, and the choice also applies to scrolling captures |
@@ -498,6 +505,11 @@ region after changing the display layout.
 | `Shift`+wheel | Scroll a zoomed capture sideways (a wide stitch); never changes the zoom |
 | `Ctrl`+wheel · middle-drag | Zoom about the cursor · pan by dragging |
 | `+` / `-` / `0` (also with `Ctrl`) | Zoom in / out / fit |
+| `Alt+=` / `Alt+-` | Grow / shrink the crop's width to the next edge on both sides, climbing out to the enclosing block or in to the one inside; Omarchy's `Super` window-resize keys, on `Alt` |
+| `Alt+Shift+=` / `Alt+Shift+-` | The same for the crop's height |
+| `Alt+Ctrl+=` / `Alt+Ctrl+-` | Grow / shrink by one native pixel per side, without snapping |
+| `Alt+F` | Fit all four crop edges to the element a rough crop surrounds |
+| `Alt` + outer handle drag | Crop freely; without `Alt` the dragged edges snap like a fresh selection |
 | Hold `Shift` while dragging | Make rectangles, ellipses, and spotlights 1:1; snap line and arrow endpoints to 45°; keep curved-arrow bends centered; while dragging a selected layer's handle, keep a rectangle, redaction or spotlight's aspect ratio |
 | Hold `Alt` while dragging | Center rectangles, ellipses, and spotlights on the press point; add `Shift` for a centered square/circle |
 | `←` `↑` `→` `↓` | Nudge the selected layer 1 px; hold `Shift` for 10 px (a held key is one undo step). With nothing selected, pan a zoomed capture |
