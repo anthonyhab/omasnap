@@ -341,6 +341,11 @@ public:
     finishWatcher_.setFuture(future.then([](bool) { return FinishResult{}; }));
   }
   /// Exercises output/handoff without starting another smoke-test process.
+  /// Turns in-place editing on or off for editors created afterwards. The
+  /// older layout tests pin the centred, fitted editor.
+  static void setInPlaceEditingForTest(bool enabled) {
+    inPlaceEditingEnabled_ = enabled;
+  }
   void setProcessLauncherForTest(
       std::function<bool(const QString &, const QStringList &)> launcher) {
     processLauncher_ = std::move(launcher);
@@ -611,6 +616,12 @@ private:
   /// The current source's edge index, starting a background build when it
   /// is missing or stale. Null until that build lands.
   const LineMap *lineMap();
+  /// Whether the overlay edits the capture at its screen position.
+  [[nodiscard]] bool editsInPlace() const;
+  /// The canvas at its screen position, or empty when it would not fit.
+  [[nodiscard]] QRectF inPlaceImageRect() const;
+  /// Where the toolbar goes beside an in-place capture, if anywhere.
+  [[nodiscard]] std::optional<qreal> inPlaceToolbarTop(const QRectF &image) const;
   /// Native source pixels per preview unit on each axis.
   [[nodiscard]] QSizeF sourceScale() const;
   /// A select-phase drag rect with its edges snapped to the frame, unless
@@ -815,6 +826,8 @@ private:
   QRectF originalSelection_;
   /// Source frame at crop press, anchoring pointer mapping and live painting.
   QRectF cropDragImageRect_;
+  /// Pointer offset from the dragged crop edges at press, in widget pixels.
+  QPointF cropGrabOffset_;
   QRectF marqueeRect_;
   QPointF cursor_;
   bool dragging_ = false;
@@ -866,6 +879,7 @@ private:
   void trackPointerVelocity(const QPointF &position, qint64 timestamp);
   /// Space held mid-drag moves the whole selection instead of sizing it.
   bool repositioning_ = false;
+  static inline bool inPlaceEditingEnabled_ = true;
   // Snapped edges in preview coordinates, drawn as guide lines. Keyboard
   // crops flash theirs until guideTimer_ clears them.
   QVector<qreal> snapGuideXs_;

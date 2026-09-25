@@ -6408,8 +6408,9 @@ bool runOpLogCapKeepsLeadingCrop(QApplication &application, QString &error) {
   return true;
 }
 
-/** Crop edges track the pointer without moving or scaling the retained pixels.
- *  The fitted image only settles back to the center when the drag ends. */
+/** Crop edges move with the pointer, keeping the offset they were grabbed at,
+ *  without moving or scaling the retained pixels. The fitted image only
+ *  settles back to the center when the drag ends. */
 bool runCropDragKeepsContentStill(QApplication &application, QString &error) {
   const std::array<QPoint, 8> edges{
       QPoint(-1, -1), QPoint(0, -1), QPoint(1, -1), QPoint(1, 0),
@@ -6462,15 +6463,17 @@ bool runCropDragKeepsContentStill(QApplication &application, QString &error) {
           target = (boundary - QPointF(edge) * distance).toPoint();
           QTest::mouseMove(&editor, target, 20);
           application.processEvents();
+          // The handle sits outside the edge; the edge keeps that offset.
+          const QPointF grab = QPointF(handle) - boundary;
           QRectF expected = frame;
           if (edge.x() < 0)
-            expected.setLeft(target.x());
+            expected.setLeft(target.x() - grab.x());
           if (edge.x() > 0)
-            expected.setRight(target.x());
+            expected.setRight(target.x() - grab.x());
           if (edge.y() < 0)
-            expected.setTop(target.y());
+            expected.setTop(target.y() - grab.y());
           if (edge.y() > 0)
-            expected.setBottom(target.y());
+            expected.setBottom(target.y() - grab.y());
           const QRectF actual = editor.sourceFrameWidgetRectForTest();
           const QPointF retained =
               landmark -
@@ -6553,7 +6556,9 @@ bool runCropDragKeepsContentStill(QApplication &application, QString &error) {
           if (zoomedScale <= scale ||
               panned.center().y() - settled.center().y() < 20 ||
               !near(live.topRight(), panned.topRight()) ||
-              std::abs(live.left() - zoomTarget.x()) > 0.01 ||
+              std::abs(live.left() - (zoomTarget.x() -
+                                      (zoomHandle.x() - panned.left()))) >
+                  0.01 ||
               std::abs(editor.editScaleForTest() - zoomedScale) > 0.0001) {
             error = QStringLiteral(
                 "Cropping a zoomed, panned image moved its pixels");
@@ -6614,7 +6619,12 @@ bool runCropKeepsAnnotationsAnchored(QApplication &application,
   application.processEvents();
   const QRectF image = editor.editImageRectForTest();
   const QPoint handle = (image.topLeft() + QPointF(-7, -7)).toPoint();
-  const QPoint inward = editor.toScreenPointForTest(QPointF(43, 43)).toPoint();
+  // The edge keeps the offset it was grabbed at, so aim the pointer that
+  // far outside the corner it should land on.
+  const QPoint inward =
+      (editor.toScreenPointForTest(QPointF(43, 43)) +
+       (QPointF(handle) - image.topLeft()))
+          .toPoint();
   QTest::mouseMove(&editor, handle, 20);
   QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, handle);
   QTest::mouseMove(&editor, inward, 20);
@@ -12205,6 +12215,9 @@ int main(int argc, char **argv) {
 
   QApplication application(argc, argv);
   QApplication::setFont(chromeDefaultFont()); // as main() does
+  // The layout checks below pin the centred editor; in-place editing has
+  // its own checks in the line-snap smoke.
+  CaptureEditor::setInPlaceEditingForTest(false);
   if (!loadCaptureFonts())
     return 17;
 

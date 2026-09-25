@@ -104,6 +104,29 @@ bool runLineSnapSmoke(QString &error) {
     return false;
   }
 
+  // Rows of real monospace text, the way a terminal draws them, never read
+  // as lines: glyph tops and baselines line up but are not smooth along.
+  {
+    QImage terminal(900, 200, QImage::Format_RGB32);
+    terminal.fill(QColor(22, 24, 30));
+    QPainter painter(&terminal);
+    painter.setPen(QColor(210, 214, 222));
+    QFont font(QStringLiteral("JetBrains Mono"));
+    font.setStyleHint(QFont::Monospace);
+    font.setPixelSize(18);
+    painter.setFont(font);
+    for (int row = 0; row < 6; ++row)
+      painter.drawText(QPointF(10, 30 + row * 28),
+                       QStringLiteral("names umami minimum xenon vanessa "
+                                      "summon nominee cumin anemone"));
+    painter.end();
+    const auto text = LineMap::build(terminal, 1.0);
+    if (!text->lines(Qt::Horizontal, 0, 200, 10, 880).isEmpty()) {
+      error = QStringLiteral("rows of text were read as horizontal lines");
+      return false;
+    }
+  }
+
   // A lone line pulls from far: its nearest neighbour (the panel, 140 px
   // away) is past the cap, so its pull is the full 0.45 * 64.
   if (leftEdge(*map, 225) != 200 || leftEdge(*map, 232) != 232) {
@@ -254,6 +277,61 @@ bool runLineSnapEditorSmoke(QApplication &application, QString &error) {
       return false;
     }
     QTest::mouseRelease(&editor, Qt::LeftButton, Qt::AltModifier, {288, 188});
+    editor.close();
+  }
+
+  {
+    // In place: the crop stays where it was drawn, over the frozen frame,
+    // with the toolbar below it; the centred layout is only a fallback.
+    CaptureEditor::setInPlaceEditingForTest(true);
+    CaptureData live = capture;
+    live.monitor.name = QStringLiteral("TEST");
+    CaptureEditor editor(live, CaptureEditor::CaptureMode::Region);
+    open(editor);
+    QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, {102, 77});
+    QTest::mouseMove(&editor, {244, 184}, 20);
+    QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier, {244, 184});
+    const QRectF shown = editor.editImageRectForTest();
+    CaptureEditor::setInPlaceEditingForTest(false);
+    if (!expectRect(shown, card, QStringLiteral("in-place edit"), error))
+      return false;
+    editor.close();
+  }
+
+  {
+    // Adjusting after the fact: a crop edge dragged near a window edge
+    // lands on it even where the pixels show no line at all (a translucent
+    // window over a blurred wallpaper), grabbed anywhere along the edge.
+    CaptureEditor::setInPlaceEditingForTest(true);
+    CaptureData flat = capture;
+    flat.monitor.name = QStringLiteral("TEST");
+    flat.source.fill(QColor(40, 44, 52));
+    flat.windows = {{QRect(60, 40, 200, 150), QStringLiteral("1"),
+                     QStringLiteral("terminal"), QStringLiteral("kitty")}};
+    CaptureEditor editor(flat, CaptureEditor::CaptureMode::Region);
+    open(editor);
+    QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, {70, 50});
+    QTest::mouseMove(&editor, {250, 170}, 20);
+    QTest::mouseRelease(&editor, Qt::LeftButton, Qt::AltModifier, {250, 170});
+    const QRectF drawn = editor.currentSelection();
+    // Grab the right edge 3 px outside it, well above its square handle.
+    QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, {253, 70});
+    QTest::mouseMove(&editor, {257, 70}, 20);
+    QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier, {257, 70});
+    const QRectF snapped = editor.currentSelection();
+    // The bottom edge dragged far from any window edge stays where it is put.
+    QTest::mousePress(&editor, Qt::LeftButton, Qt::NoModifier, {150, 173});
+    QTest::mouseMove(&editor, {150, 233}, 20);
+    QTest::mouseRelease(&editor, Qt::LeftButton, Qt::NoModifier, {150, 233});
+    const QRectF free = editor.currentSelection();
+    CaptureEditor::setInPlaceEditingForTest(false);
+    if (!expectRect(drawn, QRectF(70, 50, 180, 120),
+                    QStringLiteral("unsnapped frame"), error) ||
+        !expectRect(snapped, QRectF(QPointF(70, 50), QPointF(260, 170)),
+                    QStringLiteral("crop edge to window edge"), error) ||
+        !expectRect(free, QRectF(QPointF(70, 50), QPointF(260, 230)),
+                    QStringLiteral("crop edge away from windows"), error))
+      return false;
     editor.close();
   }
 

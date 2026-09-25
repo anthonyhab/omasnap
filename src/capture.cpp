@@ -443,6 +443,40 @@ bool parseMonitor(const QByteArray &json, MonitorInfo &monitor,
   return false;
 }
 
+QVector<QRect> parseLayers(const QByteArray &json,
+                          const MonitorInfo &monitor) {
+  // Bars and docks, for snapping. Background and full-output layers (the
+  // wallpaper, a fullscreen launcher, this overlay) have no useful edge.
+  QVector<QRect> result;
+  const QJsonObject outputs = QJsonDocument::fromJson(json).object();
+  const QJsonObject levels = outputs.value(monitor.name)
+                                 .toObject()
+                                 .value(QStringLiteral("levels"))
+                                 .toObject();
+  const QRect bounds(QPoint(), monitor.geometry.size());
+  for (auto level = levels.begin(); level != levels.end(); ++level) {
+    if (level.key() == QStringLiteral("0"))
+      continue;
+    for (const QJsonValue value : level.value().toArray()) {
+      const QJsonObject layer = value.toObject();
+      const QString space = layer.value(QStringLiteral("namespace")).toString();
+      if (space == QStringLiteral("omasnap") ||
+          space == QStringLiteral("selection"))
+        continue;
+      QRect rect(layer.value(QStringLiteral("x")).toInt() - monitor.geometry.x(),
+                 layer.value(QStringLiteral("y")).toInt() - monitor.geometry.y(),
+                 layer.value(QStringLiteral("w")).toInt(),
+                 layer.value(QStringLiteral("h")).toInt());
+      rect = rect.intersected(bounds);
+      if (rect.isEmpty() ||
+          (rect.width() >= bounds.width() && rect.height() >= bounds.height()))
+        continue;
+      result.push_back(rect);
+    }
+  }
+  return result;
+}
+
 QVector<WindowTarget> parseWindows(const QByteArray &json,
                                    const MonitorInfo &monitor) {
   QVector<WindowTarget> result;
@@ -1339,11 +1373,16 @@ bool captureMonitorPixels(const MonitorInfo &monitor, CaptureData &capture,
   // Window discovery is independent of the screen grab, so let the hyprctl
   // round trip overlap the in-process output capture.
   QProcess clients;
+  QProcess layers;
   if (includeWindows) {
     clients.setProcessChannelMode(QProcess::SeparateChannels);
     clients.start(QStringLiteral("hyprctl"),
                   {QStringLiteral("clients"), QStringLiteral("-j")});
     clients.closeWriteChannel();
+    layers.setProcessChannelMode(QProcess::SeparateChannels);
+    layers.start(QStringLiteral("hyprctl"),
+                 {QStringLiteral("layers"), QStringLiteral("-j")});
+    layers.closeWriteChannel();
     startupTimingMark("hyprctl clients launched");
   }
 
@@ -1370,6 +1409,12 @@ bool captureMonitorPixels(const MonitorInfo &monitor, CaptureData &capture,
     else if (clients.exitCode() == 0)
       capture.windows =
           parseWindows(clients.readAllStandardOutput(), capture.monitor);
+    // Layers only sharpen snapping; a slow or failed answer costs nothing.
+    if (!layers.waitForFinished(2000))
+      layers.kill();
+    else if (layers.exitCode() == 0)
+      capture.layers =
+          parseLayers(layers.readAllStandardOutput(), capture.monitor);
     startupTimingMark("hyprctl clients collected");
   }
   return true;

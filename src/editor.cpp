@@ -840,7 +840,6 @@ CaptureEditor::CaptureEditor(CaptureData capture, CaptureMode mode,
     clearSnapGuides();
     update();
   });
-  lineMap();
   if (!backgroundConfig_.imagePath.isEmpty()) {
     const QString backdropPath = backgroundConfig_.imagePath;
     backdropWatcher_.setFuture(QtConcurrent::run([backdropPath] {
@@ -1042,6 +1041,9 @@ CaptureEditor::CaptureEditor(CaptureData capture, CaptureMode mode,
   captureMode_ = mode;
   smartMode_ = mode == CaptureMode::Smart;
   liveMonitor_ = capture_.monitor;
+  // After the mode and monitor are known: they decide whether the
+  // compositor's window edges describe this frame.
+  lineMap();
   if (capture_.source.isNull()) {
     // The pixel capture has not landed yet; the overlay shows a Capturing…
     // state until startCapture() completes.
@@ -2195,8 +2197,19 @@ const LineMap *CaptureEditor::lineMap() {
   if (lineMapBuildKey_ == 0) {
     lineMapBuildKey_ = key;
     const qreal scale = sourceScale().width();
-    lineMapWatcher_.setFuture(QtConcurrent::run(
-        [source, scale] { return LineMap::build(source, scale); }));
+    // Window and bar edges come from the compositor, exact where the pixels
+    // are vague (a translucent terminal over a blurred wallpaper). They only
+    // describe the live monitor frame: a cut or a loaded file has none.
+    QVector<QRectF> anchors;
+    if (hasLiveScreen() && cuts_.isEmpty()) {
+      for (const WindowTarget &window : capture_.windows)
+        anchors.push_back(sourceRect(QRectF(window.rect)));
+      for (const QRect &layer : capture_.layers)
+        anchors.push_back(sourceRect(QRectF(layer)));
+    }
+    lineMapWatcher_.setFuture(QtConcurrent::run([source, scale, anchors] {
+      return LineMap::build(source, scale, anchors);
+    }));
   }
   return nullptr;
 }
@@ -2494,6 +2507,11 @@ QSizeF CaptureEditor::windowLegendSize() const {
 qreal CaptureEditor::toolbarTop() const {
   if (windowedPresentation_)
     return 14 + windowLegendSize().height() + 42;
+  if (phase_ == Phase::Edit) {
+    // In place, the toolbar rides with the capture.
+    if (const QRectF image = inPlaceImageRect(); !image.isEmpty())
+      return *inPlaceToolbarTop(image);
+  }
   return kToolbarTop;
 }
 
@@ -2523,9 +2541,53 @@ qreal CaptureEditor::contentBandTop() const {
          42 + 36;
 }
 
+bool CaptureEditor::editsInPlace() const {
+  // The overlay edits a fresh screen capture where it was taken: the frozen
+  // frame stays behind it and the crop keeps its screen position until
+  // output. That needs the overlay to show the frame 1:1, as the layer
+  // surface does; cuts change the frame's geometry, and files and windowed
+  // editing have no screen position to keep.
+  return inPlaceEditingEnabled_ && !windowedPresentation_ &&
+         hasLiveScreen() && cuts_.isEmpty() &&
+         !capture_.source.isNull() && !capture_.previewSize.isEmpty() &&
+         capture_.previewSize == pristineLogicalSize_ &&
+         size() == capture_.previewSize;
+}
+
+std::optional<qreal> CaptureEditor::inPlaceToolbarTop(
+    const QRectF &image) const {
+  // Below the capture, or above it when there is no room below, clear of
+  // the outer crop handles and of the status pill's band.
+  constexpr qreal kHandleClearance = 22.0;
+  constexpr qreal kBottomReserve = 58.0;
+  const qreal bar = 36.0 * toolbarScale(width());
+  const qreal below = image.bottom() + kHandleClearance;
+  if (below + bar <= height() - kBottomReserve)
+    return std::round(below);
+  const qreal above = image.top() - kHandleClearance - bar;
+  if (above >= kToolbarTop)
+    return std::round(above);
+  return std::nullopt;
+}
+
+QRectF CaptureEditor::inPlaceImageRect() const {
+  if (!editsInPlace() || selection_.isEmpty() || canvasRect_.isEmpty())
+    return {};
+  const QRectF image(selection_.topLeft() + canvasRect_.topLeft(),
+                     canvasRect_.size());
+  // A canvas grown past the screen edge, or one leaving the toolbar no room
+  // (a full-screen capture), falls back to the fitted layout.
+  if (!QRectF(rect()).adjusted(-0.5, -0.5, 0.5, 0.5).contains(image) ||
+      !inPlaceToolbarTop(image))
+    return {};
+  return image;
+}
+
 QRectF CaptureEditor::baseImageRect() const {
   if (selection_.isEmpty() || canvasRect_.isEmpty())
     return {};
+  if (const QRectF inPlace = inPlaceImageRect(); !inPlace.isEmpty())
+    return inPlace;
   // A windowed editor stacks the key guide above the toolbar, so its top
   // band is as tall as the guide actually is at this width, plus the
   // toolbar, the row the color dropdown and its popover peers hang into,
@@ -2579,6 +2641,10 @@ QRectF CaptureEditor::editImageRect() const {
 }
 
 QRectF CaptureEditor::editViewportRect() const {
+  // In place the capture can sit anywhere on screen, under the old toolbar
+  // band included; chrome claims its own clicks before the workspace does.
+  if (!inPlaceImageRect().isEmpty())
+    return QRectF(rect());
   const qreal top = windowedPresentation_ ? contentBandTop() : imageTopMargin();
   const qreal bottom = windowedPresentation_ ? 64 : 58;
   return {0, top, static_cast<qreal>(width()),
@@ -2729,7 +2795,50 @@ int CaptureEditor::cropHandleAt(const QPointF &point) const {
     if (handles.at(index).contains(point))
       return index;
   }
-  return -1;
+  if (handles.size() != 8)
+    return -1;
+  // Photoshop's crop: the whole edge is a handle, not just the square on
+  // it. The band reaches further outside than in, so drawing near an edge
+  // inside the capture still draws.
+  constexpr qreal kOutside = 10.0;
+  constexpr qreal kInside = 2.0;
+  constexpr qreal kCorner = 14.0;
+  const QRectF frame = sourceFrameWidgetRect();
+  if (frame.isEmpty() ||
+      !frame.adjusted(-kOutside, -kOutside, kOutside, kOutside).contains(point))
+    return -1;
+  const auto near = [](qreal value, qreal edge, int outward) {
+    const qreal past = (value - edge) * outward;
+    return past >= -kInside && past <= kOutside;
+  };
+  const bool left = near(point.x(), frame.left(), -1);
+  const bool right = near(point.x(), frame.right(), 1);
+  const bool top = near(point.y(), frame.top(), -1);
+  const bool bottom = near(point.y(), frame.bottom(), 1);
+  const bool nearLeft = point.x() < frame.left() + kCorner;
+  const bool nearRight = point.x() > frame.right() - kCorner;
+  const bool nearTop = point.y() < frame.top() + kCorner;
+  const bool nearBottom = point.y() > frame.bottom() - kCorner;
+  // Indices follow cropHandleRects(): clockwise from the top-left corner.
+  int handle = -1;
+  if ((top && nearLeft) || (left && nearTop))
+    handle = 0;
+  else if ((top && nearRight) || (right && nearTop))
+    handle = 2;
+  else if ((bottom && nearRight) || (right && nearBottom))
+    handle = 4;
+  else if ((bottom && nearLeft) || (left && nearBottom))
+    handle = 6;
+  else if (top)
+    handle = 1;
+  else if (right)
+    handle = 3;
+  else if (bottom)
+    handle = 5;
+  else if (left)
+    handle = 7;
+  // Only edges that are on screen can be dragged, as with the squares.
+  return handle >= 0 && !handles.at(handle).isEmpty() ? handle : -1;
 }
 
 qreal CaptureEditor::editScale() const {
@@ -5711,14 +5820,15 @@ void CaptureEditor::mouseMoveEvent(QMouseEvent *event) {
       const QSizeF previewSize = capture_.previewSize;
       if (previewSize.width() <= 0.0 || previewSize.height() <= 0.0)
         return;
+      const QPointF edgePointer = cursor_ - cropGrabOffset_;
       const qreal sourceX = originalSelection_.left() +
-                            (cursor_.x() - cropDragImageRect_.left()) *
+                            (edgePointer.x() - cropDragImageRect_.left()) *
                                 originalSelection_.width() /
                                 cropDragImageRect_.width();
       const qreal sourceY =
-          originalSelection_.top() + (cursor_.y() - cropDragImageRect_.top()) *
-                                         originalSelection_.height() /
-                                         cropDragImageRect_.height();
+          originalSelection_.top() +
+          (edgePointer.y() - cropDragImageRect_.top()) *
+              originalSelection_.height() / cropDragImageRect_.height();
       constexpr qreal minimumCrop = 16;
       QRectF updated = originalSelection_;
       if (handle == 0 || handle == 6 || handle == 7) {
@@ -6195,6 +6305,17 @@ void CaptureEditor::mousePressEvent(QMouseEvent *event) {
     if (cropHandle >= 0) {
       originalSelection_ = selection_;
       cropDragImageRect_ = sourceFrameWidgetRect();
+      // The edge moves by what the pointer moves, never jumping to the
+      // pointer: handles sit outside the edge and the grab band is wide.
+      cropGrabOffset_ = {};
+      if (cropHandle == 0 || cropHandle == 6 || cropHandle == 7)
+        cropGrabOffset_.setX(cursor_.x() - cropDragImageRect_.left());
+      else if (cropHandle == 2 || cropHandle == 3 || cropHandle == 4)
+        cropGrabOffset_.setX(cursor_.x() - cropDragImageRect_.right());
+      if (cropHandle == 0 || cropHandle == 1 || cropHandle == 2)
+        cropGrabOffset_.setY(cursor_.y() - cropDragImageRect_.top());
+      else if (cropHandle == 4 || cropHandle == 5 || cropHandle == 6)
+        cropGrabOffset_.setY(cursor_.y() - cropDragImageRect_.bottom());
       interaction_ = static_cast<Interaction>(
           static_cast<int>(Interaction::CropTopLeft) + cropHandle);
       dragStartState_ = editState();
@@ -7770,8 +7891,16 @@ void CaptureEditor::paintEdit(QPainter &painter) {
   // backdrop, an opaque theme surface so the desktop does not bleed
   // through and the capture reads as a picture on a table.
   const bool opaqueBackdrop = windowedPresentation_ && windowedBackdropOpaque_;
-  painter.fillRect(rect(), opaqueBackdrop ? chromeTheme().canvasSurface
-                                          : chromeAlpha(chromeTheme().scrim, 160));
+  if (!inPlaceImageRect().isEmpty()) {
+    // In place, the frozen frame stays up, dimmed as while selecting, so
+    // nothing on screen moves between choosing the area and editing it.
+    refreshBackdropCache();
+    painter.drawPixmap(rect(), dimmedBackdrop_);
+  } else {
+    painter.fillRect(rect(), opaqueBackdrop
+                                 ? chromeTheme().canvasSurface
+                                 : chromeAlpha(chromeTheme().scrim, 160));
+  }
   painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
   const QRectF image = editImageRect();
   const QRectF visibleImage = visibleEditImageRect();

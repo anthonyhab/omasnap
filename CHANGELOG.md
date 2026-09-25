@@ -7,8 +7,14 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 
 ### Added
 
+- The overlay editor opens in place over the frozen screen, with the toolbar
+  beside the area, instead of re-centering the capture. Crop edges can be
+  grabbed anywhere along their length and move by the pointer's travel instead
+  of jumping to it.
+
 - Selection edges and crop handles snap to straight lines in the captured
-  frame, with dashed guides. The pull widens around lone lines, tightens among
+  frame and to Hyprland's window and bar edges, with dashed guides. Rows of
+  text are ignored. The pull widens around lone lines, tightens among
   dense ones, and follows the pointer's heading; hold `Alt` to place edges
   freely, or `Space` to move the region mid-drag. In the editor,
   `Alt+=` / `Alt+-` grow or shrink the crop to the next edge (`Shift` for

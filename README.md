@@ -20,6 +20,10 @@ preview keeps it on screen.
 - Smart selection by default: drag a freeform region, click a window to crop
   it, or click open monitor space for the full monitor. Explicit region,
   window, fullscreen, and scrolling-region modes remain available.
+- The overlay editor opens in place: the area stays where it was drawn, over
+  the frozen screen, with the toolbar beside it, until the capture is output.
+  A full-screen capture, a grown canvas or a cut falls back to the centered
+  view.
 - Edge snapping: selection edges and crop handles snap to the straight lines
   in the frozen frame, with a pull that adapts to how crowded the lines are and
   to where the pointer is heading. `Space` moves a region mid-drag. In the
@@ -460,6 +464,7 @@ controls to return focus from the live page.
 | Click | In smart mode, capture the window under the pointer, or the full monitor outside any window |
 | Drag | Select a region, with its native pixel size shown at the pointer; each edge snaps to a straight line in the frame (window borders, cards, table rules) that runs along it, keeps a 1 px border inside, and shows a dashed guide. A lone line pulls from up to 32 px away, dense rules only up to half their spacing; heading toward a line reaches it early, a fast flick glides past, and pulling off a held line releases it |
 | `Space` + drag | Move the whole region instead of sizing it; it snaps as it goes |
+| | Window and bar edges come from Hyprland itself and outrank lines read from pixels, so a translucent window over a blurred wallpaper still snaps exactly; rows of text never do |
 | `Alt` + drag | Place the region freely, without edge snapping |
 | `Tab` / `Shift+Tab` | Cycle the region's shape: free (default), square, 3:4, 16:9; works mid-drag |
 | `S` | Toggle scrolling-region mode |
@@ -509,7 +514,8 @@ region after changing the display layout.
 | `Alt+Shift+=` / `Alt+Shift+-` | The same for the crop's height |
 | `Alt+Ctrl+=` / `Alt+Ctrl+-` | Grow / shrink by one native pixel per side, without snapping |
 | `Alt+F` | Fit all four crop edges to the element a rough crop surrounds |
-| `Alt` + outer handle drag | Crop freely; without `Alt` the dragged edges snap like a fresh selection |
+| Drag a crop edge | The whole edge is a handle (from 10 px outside it to 2 px in), and it moves by what the pointer moves rather than jumping to it; the dragged edges snap like a fresh selection, window edges included |
+| `Alt` + crop edge drag | Crop freely, without snapping |
 | Hold `Shift` while dragging | Make rectangles, ellipses, and spotlights 1:1; snap line and arrow endpoints to 45°; keep curved-arrow bends centered; while dragging a selected layer's handle, keep a rectangle, redaction or spotlight's aspect ratio |
 | Hold `Alt` while dragging | Center rectangles, ellipses, and spotlights on the press point; add `Shift` for a centered square/circle |
 | `←` `↑` `→` `↓` | Nudge the selected layer 1 px; hold `Shift` for 10 px (a held key is one undo step). With nothing selected, pan a zoomed capture |

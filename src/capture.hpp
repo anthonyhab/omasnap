@@ -44,6 +44,9 @@ struct CaptureData {
   /** Logical size the native source image is presented at. */
   QSize previewSize;
   QVector<WindowTarget> windows;
+  /** Layer-shell surfaces such as bars and docks, monitor-local logical
+   *  pixels. Snap targets only; they are never picked as a window. */
+  QVector<QRect> layers;
   /** Loaded documents retain their exact pixel dimensions during rendering. */
   bool preserveSourceResolution = false;
 };
