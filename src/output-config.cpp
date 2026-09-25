@@ -9,6 +9,7 @@
 OutputConfig loadOutputConfig(const QString &filePath) {
   OutputConfig config;
   QSettings settings(filePath, QSettings::IniFormat);
+  config.autosave = settings.value(QStringLiteral("output/autosave"), config.autosave).toBool();
   QString directory =
       settings.value(QStringLiteral("output/directory")).toString().trimmed();
   if (directory == QStringLiteral("~"))

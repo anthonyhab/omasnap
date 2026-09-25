@@ -7,6 +7,10 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 
 ### Added
 
+- Fresh captures save automatically without losing the clipboard copy or timed
+  preview. Set `[output] autosave = false` to opt out. Saved files survive preview
+  expiry, and explicit copy-only output remains copy-only.
+
 - Save As (`Ctrl+Shift+S`): choose a PNG destination.
   The chooser follows the active theme, remembers its folder during editing,
   and saves lossless PNGs atomically on a worker.

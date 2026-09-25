@@ -2432,7 +2432,7 @@ bool runScrollScaleChecks(QString &error) {
   return true;
 }
 
-bool runPostCaptureChecks(QString &error) {
+bool runPostCaptureChecks(QString &error, bool autosave) {
   if (!runScrollScaleChecks(error))
     return false;
   QTemporaryDir directory;
@@ -2478,7 +2478,23 @@ bool runPostCaptureChecks(QString &error) {
   capture.windows = {{QRect(100, 100, 300, 200), QStringLiteral("window"),
                        QStringLiteral("fixture"), QStringLiteral("test")}};
 
+  const QByteArray oldConfigHome = qgetenv("XDG_CONFIG_HOME");
+  const QByteArray oldSaveDir = qgetenv("OMASNAP_SCREENSHOT_DIR");
+  const auto restoreAutosave = qScopeGuard([&] {
+    oldConfigHome.isNull() ? qunsetenv("XDG_CONFIG_HOME") : qputenv("XDG_CONFIG_HOME", oldConfigHome);
+    oldSaveDir.isNull() ? qunsetenv("OMASNAP_SCREENSHOT_DIR") : qputenv("OMASNAP_SCREENSHOT_DIR", oldSaveDir);
+  });
+  qputenv("OMASNAP_SCREENSHOT_DIR", directory.filePath(QStringLiteral("saved")).toUtf8());
   using Mode = CaptureEditor::CaptureMode;
+  qputenv("XDG_CONFIG_HOME", directory.path().toUtf8());
+  // The enabled case has no config: verify the actual built-in default.
+  if (!autosave) {
+    QDir().mkpath(QFileInfo(defaultConfigPath()).absolutePath());
+    QFile config(defaultConfigPath());
+    if (!config.open(QIODevice::WriteOnly) ||
+        config.write("[output]\nautosave = false\n") < 0)
+      return false;
+  }
   for (const Mode mode : {Mode::Region, Mode::Smart, Mode::Window,
                           Mode::Fullscreen, Mode::Scroll}) {
     CaptureEditor editor(capture, mode, QuickOutputMode::CopyAndPreview);
@@ -2565,6 +2581,11 @@ bool runPostCaptureChecks(QString &error) {
                   .arg(static_cast<int>(mode));
       return false;
     }
+    if (log.savedPath.isEmpty() == autosave ||
+        (autosave && QImage(log.savedPath).convertToFormat(expected.format()) != expected)) {
+      error = QStringLiteral("Autosave did not preserve the capture and preview's saved path");
+      return false;
+    }
     const auto recent = findRecentSnap(log.recentId);
     const auto listed = listRecentSnaps(false);
     if (!recent || listed.isEmpty() ||
@@ -2579,7 +2600,8 @@ bool runPostCaptureChecks(QString &error) {
       if (!preview.isLocked())
         return false;
     }
-    if (QFile::exists(pin) || !QFile::exists(recent->sourcePath)) {
+    if (QFile::exists(pin) || !QFile::exists(recent->sourcePath) ||
+        (autosave && !QFile::exists(log.savedPath))) {
       error = QStringLiteral("Preview expiry removed its recent capture");
       return false;
     }
@@ -2744,7 +2766,8 @@ bool runPostCaptureChecks(QString &error) {
     const QStringList saved = QDir(savedDirectory.path()).entryList(
         {QStringLiteral("*.png")}, QDir::Files);
     const bool shouldSave =
-        output == QuickOutputMode::Save || output == QuickOutputMode::Both;
+        output == QuickOutputMode::Save || output == QuickOutputMode::Both ||
+        (output == QuickOutputMode::CopyAndPreview && autosave);
     const QImage expectedClipboard =
         output == QuickOutputMode::Save ? clipboardBefore : expected;
     if (editor.isVisible() || editor.editingForTest() ||
@@ -3133,21 +3156,30 @@ bool runScreenshotFilenameChecks(QString &error) {
     QFile configFile(configPath);
     if (!configFile.open(QIODevice::WriteOnly | QIODevice::Text) ||
         configFile.write("[output]\ndirectory = ~/Captures\n"
-                         "filename = {date} {app}\n") < 0) {
+                         "filename = {date} {app}\nautosave = true\n") < 0) {
       error = QStringLiteral("Could not write filename-check config");
       return false;
     }
     configFile.close();
     const OutputConfig loaded = loadOutputConfig(configPath);
     if (loaded.directory != QDir::homePath() + QStringLiteral("/Captures") ||
-        loaded.filename != QStringLiteral("{date} {app}")) {
+        loaded.filename != QStringLiteral("{date} {app}") || !loaded.autosave) {
       error = QStringLiteral("loadOutputConfig read %1 / %2")
                   .arg(loaded.directory, loaded.filename);
       return false;
     }
+    if (!configFile.open(QIODevice::WriteOnly | QIODevice::Truncate) ||
+        configFile.write("[output]\nautosave = false\n") < 0)
+      return false;
+    configFile.close();
+    if (loadOutputConfig(configPath).autosave ||
+        !loadOutputConfig(directory.filePath(QStringLiteral("missing.conf"))).autosave) {
+      error = QStringLiteral("Autosave config did not override the built-in default");
+      return false;
+    }
     const OutputConfig defaults = loadOutputConfig(
         QDir(directory.path()).filePath(QStringLiteral("missing.conf")));
-    if (!defaults.directory.isEmpty() ||
+    if (!defaults.autosave || !defaults.directory.isEmpty() ||
         defaults.filename != QStringLiteral("screenshot-{date}_{time}-{app}")) {
       error = QStringLiteral("loadOutputConfig changed defaults for a missing file");
       return false;
@@ -12143,6 +12175,16 @@ int main(int argc, char **argv) {
     return 0;
   }
   QString snapshotError;
+  if (argc > 1 && QString::fromLocal8Bit(argv[1]) == QStringLiteral("--output-checks")) {
+    if (!runQuickOutputChecks(snapshotError) ||
+        !runPostCaptureChecks(snapshotError, false) ||
+        !runPostCaptureChecks(snapshotError, true) ||
+        !runScreenshotFilenameChecks(snapshotError)) {
+      qWarning().noquote() << snapshotError;
+      return 1;
+    }
+    return 0;
+  }
   if (!runShortcutGuideSmoke(application, snapshotError)) {
     qWarning().noquote() << snapshotError;
     return 216;
@@ -12242,7 +12284,8 @@ int main(int argc, char **argv) {
     qWarning().noquote() << snapshotError;
     return 73;
   }
-  if (!runPostCaptureChecks(snapshotError)) {
+  if (!runPostCaptureChecks(snapshotError, false) ||
+        !runPostCaptureChecks(snapshotError, true)) {
     qWarning().noquote() << snapshotError;
     return 137;
   }
