@@ -7,6 +7,13 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 
 ### Added
 
+- Overlay chrome stays out of the capture's way. The in-place toolbar
+  centers on the capture and runs almost to the screen edge; its menus and
+  tooltips open away from the image; the Scroll Capture pill takes the side
+  the toolbar is not on. The shortcuts card moves to a free corner, and the
+  status pill moves to the top, rather than cover the selection, the
+  capture, or the toolbar.
+
 - The overlay editor opens in place over the frozen screen, with the toolbar
   beside the area, instead of re-centering the capture. Crop edges can be
   grabbed anywhere along their length and move by the pointer's travel instead

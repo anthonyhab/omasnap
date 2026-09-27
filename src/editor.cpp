@@ -258,15 +258,24 @@ QRect parseStoredRegion(const QString &line, const QString &monitor,
 constexpr qreal kNudgeStep = 1.0;
 constexpr qreal kNudgeStepShift = 10.0;
 
-/** Keeps a downward submenu alive while the pointer travels toward it. */
-bool inDownwardSubmenuTriangle(const QPointF &origin, const QRectF &submenu,
-                               const QPointF &pointer) {
-  if (origin.isNull() || pointer.y() < origin.y() ||
-      pointer.y() > submenu.bottom() + 6.0)
+/** Keeps a submenu alive while the pointer travels toward it, whether it
+ *  hangs below its anchor or, over a capture below the toolbar, above it. */
+bool inSubmenuTriangle(const QPointF &origin, const QRectF &submenu,
+                       const QPointF &pointer) {
+  if (origin.isNull())
     return false;
   QPolygonF triangle;
-  triangle << origin << submenu.bottomLeft() + QPointF(-8, 6)
-           << submenu.bottomRight() + QPointF(8, 6);
+  if (submenu.top() >= origin.y()) {
+    if (pointer.y() < origin.y() || pointer.y() > submenu.bottom() + 6.0)
+      return false;
+    triangle << origin << submenu.bottomLeft() + QPointF(-8, 6)
+             << submenu.bottomRight() + QPointF(8, 6);
+  } else {
+    if (pointer.y() > origin.y() || pointer.y() < submenu.top() - 6.0)
+      return false;
+    triangle << origin << submenu.topLeft() + QPointF(-8, -6)
+             << submenu.topRight() + QPointF(8, -6);
+  }
   return triangle.containsPoint(pointer, Qt::OddEvenFill);
 }
 /// Arrow presses closer together than this share one undo entry, so a held
@@ -648,7 +657,8 @@ QPointF constrainedRedactionEndpoint(const QPointF &candidate,
 constexpr qint64 kOcrSweepMs = 1200;
 
 void drawInstantTooltip(QPainter &painter, const QRect &bounds,
-                        const QRectF &anchor, const QString &text) {
+                        const QRectF &anchor, const QString &text,
+                        bool preferBelow = false) {
   if (text.isEmpty())
     return;
   painter.setFont(chromeFont(12));
@@ -656,9 +666,11 @@ void drawInstantTooltip(QPainter &painter, const QRect &bounds,
   const qreal height = 28;
   qreal x = std::clamp(anchor.center().x() - width / 2.0, 8.0,
                        std::max(8.0, bounds.width() - width - 8.0));
-  qreal y = anchor.top() - height - 7;
-  if (y < 6)
-    y = anchor.bottom() + 7;
+  const qreal above = anchor.top() - height - 7;
+  const qreal below = anchor.bottom() + 7;
+  qreal y = preferBelow ? below : above;
+  if (preferBelow ? y + height > bounds.height() - 6 : y < 6)
+    y = preferBelow ? above : below;
   const QRectF pill(x, y, width, height);
   painter.setPen(QPen(chromeTheme().tooltipBorder, 1));
   painter.setBrush(chromeTheme().tooltipBackground);
@@ -2062,16 +2074,22 @@ QRectF CaptureEditor::colorPaletteRect() const {
       8.0 + (static_cast<qreal>(paletteConfig_.palette.size()) + 2.0) * 28.0;
   const qreal x = std::clamp(anchor.center().x() - paletteWidth / 2.0, 8.0,
                              std::max(8.0, width() - paletteWidth - 8.0));
-  return {x, anchor.bottom() + 4, paletteWidth, 36};
+  const qreal y =
+      toolbarAboveImage() ? anchor.top() - 4 - 36 : anchor.bottom() + 4;
+  return {x, y, paletteWidth, 36};
 }
 
 QRectF CaptureEditor::customColorPanelRect() const {
-  QRectF panel(colorPaletteRect().left(), colorPaletteRect().bottom() + 6, 220,
-               150);
+  const QRectF palette = colorPaletteRect();
+  QRectF panel(palette.left(), palette.bottom() + 6, 220, 150);
+  if (toolbarAboveImage())
+    panel.moveBottom(palette.top() - 6);
   if (panel.right() > width() - 8)
     panel.moveRight(width() - 8);
   if (panel.bottom() > height() - 8)
     panel.moveBottom(height() - 8);
+  if (panel.top() < 8)
+    panel.moveTop(8);
   return panel;
 }
 
@@ -2079,12 +2097,16 @@ QRectF CaptureEditor::shapeMenuRect() const {
   QRectF anchor = toolbarButtonRect(QStringLiteral("tool-rectangle"));
   if (anchor.isEmpty())
     anchor = toolbarButtonRect(QStringLiteral("tool-ellipse"));
-  return {anchor.center().x() - 58, anchor.bottom() + 4, 116, 36};
+  const qreal y =
+      toolbarAboveImage() ? anchor.top() - 4 - 36 : anchor.bottom() + 4;
+  return {anchor.center().x() - 58, y, 116, 36};
 }
 
 QRectF CaptureEditor::textSizePanelRect() const {
   const QRectF anchor = toolbarButtonRect(QStringLiteral("tool-text"));
-  return {anchor.center().x() - 51, anchor.bottom() + 6, 102, 34};
+  const qreal y =
+      toolbarAboveImage() ? anchor.top() - 6 - 34 : anchor.bottom() + 6;
+  return {anchor.center().x() - 51, y, 102, 34};
 }
 
 void CaptureEditor::applyCustomColor(const QPointF &position) {
@@ -2515,6 +2537,66 @@ qreal CaptureEditor::toolbarTop() const {
   return kToolbarTop;
 }
 
+qreal CaptureEditor::toolbarLeft(qreal total) const {
+  const qreal centered = (width() - total) / 2.0;
+  if (windowedPresentation_ || phase_ != Phase::Edit)
+    return centered;
+  const QRectF image = inPlaceImageRect();
+  if (image.isEmpty())
+    return centered;
+  return std::round(std::clamp(image.center().x() - total / 2.0, 8.0,
+                               std::max(8.0, width() - total - 8.0)));
+}
+
+bool CaptureEditor::toolbarAboveImage() const {
+  if (windowedPresentation_ || phase_ != Phase::Edit)
+    return false;
+  const QRectF image = inPlaceImageRect();
+  return !image.isEmpty() && toolbarTop() < image.top();
+}
+
+bool CaptureEditor::toolbarBelowImage() const {
+  if (windowedPresentation_ || phase_ != Phase::Edit)
+    return false;
+  const QRectF image = inPlaceImageRect();
+  return !image.isEmpty() && toolbarTop() > image.bottom();
+}
+
+ChromeObstacles CaptureEditor::statusPillObstacles() const {
+  ChromeObstacles obstacles = chromeObstacles();
+  if (shortcutGuide_->isVisible())
+    obstacles.controls.push_back(QRectF(shortcutGuide_->geometry()));
+  return obstacles;
+}
+
+ChromeObstacles CaptureEditor::chromeObstacles() const {
+  ChromeObstacles obstacles;
+  if (phase_ == Phase::Select) {
+    if (!windowMode_ && !selection_.isEmpty())
+      obstacles.content.push_back(selection_.adjusted(-8, -8, 8, 8));
+    if (dragging_)
+      obstacles.content.push_back(
+          QRectF(cursor_ - QPointF(40, 40), QSizeF(80, 80)));
+  } else if (phase_ == Phase::Edit) {
+    if (const QRectF image = visibleEditImageRect(); !image.isEmpty())
+      obstacles.content.push_back(image.adjusted(-14, -14, 14, 14));
+    QRectF bar;
+    for (const ToolbarButton &button : toolbarButtons())
+      bar = bar.isNull() ? button.rect : bar.united(button.rect);
+    if (colorPaletteOpen_)
+      bar = bar.united(colorPaletteRect());
+    if (customColorPickerOpen_)
+      bar = bar.united(customColorPanelRect());
+    if (!bar.isNull())
+      obstacles.controls.push_back(bar.adjusted(-6, -6, 6, 6));
+    if (const QRectF pill = scrollPillRect(); !pill.isNull())
+      obstacles.controls.push_back(pill);
+  }
+  if (const QRectF shelf = recentsHotZone(); !shelf.isNull())
+    obstacles.controls.push_back(shelf);
+  return obstacles;
+}
+
 qreal CaptureEditor::imageTopMargin() const {
   // The toolbar's own height (it scales with width, see toolbarScale) plus
   // the gap below it: the real, current height of everything stacked above
@@ -2557,9 +2639,10 @@ bool CaptureEditor::editsInPlace() const {
 std::optional<qreal> CaptureEditor::inPlaceToolbarTop(
     const QRectF &image) const {
   // Below the capture, or above it when there is no room below, clear of
-  // the outer crop handles and of the status pill's band.
+  // the outer crop handles. The status pill and shortcuts card move out of
+  // its way, so it may run almost to the screen edge.
   constexpr qreal kHandleClearance = 22.0;
-  constexpr qreal kBottomReserve = 58.0;
+  constexpr qreal kBottomReserve = 10.0;
   const qreal bar = 36.0 * toolbarScale(width());
   const qreal below = image.bottom() + kHandleClearance;
   if (below + bar <= height() - kBottomReserve)
@@ -3102,7 +3185,7 @@ CaptureEditor::toolbarButtons(QVector<qreal> *groupDividers,
   const qreal gap = 2.5 * scale;
   const qreal groupGap = kToolbarGroupGap * scale;
   const qreal total = kToolbarWidth * scale;
-  qreal x = (width() - total) / 2.0;
+  qreal x = toolbarLeft(total);
   const qreal y = toolbarTop();
   auto add = [&](qreal buttonWidth, QString action, QString label,
                  QString tooltip, QColor color = {}) {
@@ -6108,21 +6191,21 @@ void CaptureEditor::mouseMoveEvent(QMouseEvent *event) {
     }
     const bool overPalette =
         colorPaletteOpen_ &&
-        colorPaletteRect().adjusted(0, -4, 0, 0).contains(cursor_);
+        colorPaletteRect().adjusted(0, -4, 0, 4).contains(cursor_);
     const bool overCustom =
         customColorPickerOpen_ && customColorPanelRect().contains(cursor_);
     const bool approachingPalette =
         colorPaletteOpen_ &&
-        inDownwardSubmenuTriangle(paletteIntentOrigin_, colorPaletteRect(),
+        inSubmenuTriangle(paletteIntentOrigin_, colorPaletteRect(),
                                   cursor_);
     const bool approachingCustom =
         customColorPickerOpen_ &&
-        inDownwardSubmenuTriangle(customColorIntentOrigin_,
+        inSubmenuTriangle(customColorIntentOrigin_,
                                   customColorPanelRect(), cursor_);
     const bool overShapes = shapeMenuOpen_ && shapeMenuRect().contains(cursor_);
     const bool approachingShapes =
         shapeMenuOpen_ &&
-        inDownwardSubmenuTriangle(shapeIntentOrigin_, shapeMenuRect(), cursor_);
+        inSubmenuTriangle(shapeIntentOrigin_, shapeMenuRect(), cursor_);
     shapeMenuOpen_ = overShapeAnchor || overShapes || approachingShapes;
     if (!shapeMenuOpen_)
       shapeIntentOrigin_ = {};
@@ -6130,7 +6213,7 @@ void CaptureEditor::mouseMoveEvent(QMouseEvent *event) {
         textSizeMenuOpen_ && textSizePanelRect().contains(cursor_);
     const bool approachingTextSizes =
         textSizeMenuOpen_ &&
-        inDownwardSubmenuTriangle(textSizeIntentOrigin_, textSizePanelRect(),
+        inSubmenuTriangle(textSizeIntentOrigin_, textSizePanelRect(),
                                   cursor_);
     textSizeMenuOpen_ = overTextAnchor || overTextSizes || approachingTextSizes;
     if (!textSizeMenuOpen_)
@@ -7458,11 +7541,16 @@ QRectF CaptureEditor::scrollPillRect() const {
       QFontMetricsF(font).horizontalAdvance(QStringLiteral("SCROLL CAPTURE")) +
       28;
   constexpr qreal height = 22.0;
-  // Just under the image, clear of the crop handles; inside the viewport if
-  // the image reaches the bottom band.
+  // On the side of the image the toolbar is not on, clear of the crop
+  // handles; inside the image when that side has no room.
   qreal y = image.bottom() + 14;
-  if (y + height > this->height() - 60)
+  if (toolbarBelowImage()) {
+    y = image.top() - 14 - height;
+    if (y < 8)
+      y = image.top() + 10;
+  } else if (y + height > this->height() - (toolbarAboveImage() ? 8 : 60)) {
     y = image.bottom() - height - 10;
+  }
   return QRectF(image.center().x() - width / 2.0, y, width, height);
 }
 
@@ -7843,7 +7931,7 @@ void CaptureEditor::paintSelect(QPainter &painter) {
   }
   if (!exporting)
     paintRecents(painter);
-  drawStatusPill(painter, rect(), status_);
+  drawStatusPill(painter, rect(), status_, statusPillObstacles());
   if (!exporting)
     drawMeasureBadge(painter, rect(), cursor_, measurementText());
 }
@@ -8452,7 +8540,13 @@ void CaptureEditor::paintEdit(QPainter &painter) {
     painter.setPen(chromeAlpha(chromeTheme().foreground, hot ? 255 : 200));
     painter.drawText(pill, Qt::AlignCenter, QStringLiteral("SCROLL CAPTURE"));
   }
-  drawStatusPill(painter, rect(), status_);
+  drawStatusPill(painter, rect(), status_, statusPillObstacles());
+  // Tooltips open away from an in-place capture, like the menus; while a
+  // menu hangs on that side they take the other one.
+  const bool menuOpen = colorPaletteOpen_ || customColorPickerOpen_ ||
+                        shapeMenuOpen_ || textSizeMenuOpen_;
+  const bool tooltipsBelow =
+      menuOpen ? toolbarAboveImage() : toolbarBelowImage();
   // A windowed editor has no clear margin for the overlay's key column; the
   // guide spreads as a card over the reserved band above the toolbar.
   if (windowedPresentation_) {
@@ -8465,7 +8559,7 @@ void CaptureEditor::paintEdit(QPainter &painter) {
   }
   if (hoveredButton) {
     drawInstantTooltip(painter, rect(), hoveredButton->rect,
-                       hoveredButton->tooltip);
+                       hoveredButton->tooltip, tooltipsBelow);
   } else if (tool_ == Tool::Arrow || tool_ == Tool::Line ||
              tool_ == Tool::Freehand || tool_ == Tool::Highlighter ||
              tool_ == Tool::Marker || tool_ == Tool::Redact ||
@@ -8510,7 +8604,8 @@ void CaptureEditor::paintEdit(QPainter &painter) {
           tooltip = QStringLiteral("Size %1 · Scroll wheel")
                         .arg(qRound(annotationSize_));
         }
-        drawInstantTooltip(painter, rect(), button.rect, tooltip);
+        drawInstantTooltip(painter, rect(), button.rect, tooltip,
+                           tooltipsBelow);
         break;
       }
     }
@@ -8524,6 +8619,8 @@ void CaptureEditor::paintEvent(QPaintEvent *event) {
   if (showGuide)
     shortcutGuide_->setEntries(phase_ == Phase::Edit ? editorHotkeyEntries()
                                                    : captureHotkeyEntries());
+  if (showGuide)
+    shortcutGuide_->setAvoid(chromeObstacles());
   shortcutGuide_->setVisible(showGuide);
   const bool firstPaint = !firstPaintReported_;
   if (firstPaint)
