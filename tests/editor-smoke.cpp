@@ -1004,6 +1004,31 @@ bool runShortcutGuideSmoke(QApplication &application, QString &error) {
   capture.source.fill(QColor(QStringLiteral("#d8dde6")));
   capture.previewSize = capture.source.size();
 
+  {
+    // A selection dragged over the card's corner sends it to a clear one.
+    CaptureEditor editor(capture, CaptureEditor::CaptureMode::Region);
+    editor.setSuppressSnapshots(true);
+    editor.resize(1200, 800);
+    editor.show();
+    if (!QTest::qWaitForWindowExposed(&editor)) {
+      error = QStringLiteral("Shortcut guide window was not exposed");
+      return false;
+    }
+    auto *guide = editor.findChild<ShortcutGuide *>();
+    QTest::mousePress(&editor, Qt::LeftButton, Qt::AltModifier, {400, 300});
+    QTest::mouseMove(&editor, {60, 760}, 20);
+    editor.repaint();
+    const QRect card = guide ? guide->geometry() : QRect();
+    const QRectF selection = editor.currentSelection();
+    QTest::mouseRelease(&editor, Qt::LeftButton, Qt::AltModifier, {60, 760});
+    if (!guide || !guide->isVisible() || selection.isEmpty() ||
+        QRectF(card).intersects(selection)) {
+      error = QStringLiteral("Shortcut card covered the selection being drawn");
+      return false;
+    }
+    editor.close();
+  }
+
   for (const auto mode : {CaptureEditor::CaptureMode::Region,
                           CaptureEditor::CaptureMode::File}) {
     CaptureEditor editor(capture, mode);

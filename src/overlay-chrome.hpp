@@ -59,6 +59,21 @@ void drawAnchoredHotkeyLegend(QPainter &painter, const QRect &bounds,
                               const QVector<QPair<QString, QString>> &entries,
                               const QRectF &anchorAbove);
 
-/// The instruction line along the bottom.
-void drawStatusPill(QPainter &painter, const QRect &bounds,
-                    const QString &text);
+/// What floating chrome keeps clear of: the capture it would hide, and the
+/// controls (toolbar, menus, pills) it must never sit on while any other
+/// spot is free of them.
+struct ChromeObstacles {
+  QVector<QRectF> content;
+  QVector<QRectF> controls;
+};
+
+/// The first of `candidates` that touches no obstacle, else the one covering
+/// the least: how floating chrome finds a spot that keeps the capture in
+/// view. Candidates are listed in order of preference.
+[[nodiscard]] QRectF leastCoveringRect(const QVector<QRectF> &candidates,
+                                       const ChromeObstacles &avoid);
+
+/// The instruction line along the bottom, or along the top when the bottom
+/// would cover any of `avoid`. Returns where it was drawn.
+QRectF drawStatusPill(QPainter &painter, const QRect &bounds,
+                      const QString &text, const ChromeObstacles &avoid = {});

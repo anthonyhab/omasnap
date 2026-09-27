@@ -73,6 +73,13 @@ void ShortcutGuide::setExpanded(bool expanded) {
   update();
 }
 
+void ShortcutGuide::setAvoid(const ChromeObstacles &avoid) {
+  if (avoid_.content == avoid.content && avoid_.controls == avoid.controls)
+    return;
+  avoid_ = avoid;
+  reflow();
+}
+
 QRect ShortcutGuide::toggleRect() const {
   return {0, height() - kToggleHeight, width(), kToggleHeight};
 }
@@ -88,8 +95,24 @@ void ShortcutGuide::reflow() {
   const int width = std::min(std::max(160, contentWidth_),
                              std::max(1, available.width() - kMargin * 2));
   const int height = kToggleHeight + kPadding * 2 + visibleRows_ * kRowHeight;
-  setGeometry(kMargin, std::max(kMargin, available.height() - kMargin - height),
-               width, height);
+  const int left = kMargin;
+  const int right = std::max(kMargin, available.width() - kMargin - width);
+  const int top = kMargin;
+  const int bottom = std::max(kMargin, available.height() - kMargin - height);
+  // Bottom left first, then the other corners, the current one ahead of all
+  // of them so the card does not hop while its corner stays clear.
+  const QVector<QRect> corners = {{left, bottom, width, height},
+                                  {right, bottom, width, height},
+                                  {left, top, width, height},
+                                  {right, top, width, height}};
+  QVector<QRectF> candidates = {QRectF(corners.at(corner_))};
+  for (const QRect &corner : corners)
+    candidates.push_back(QRectF(corner));
+  const QRect chosen =
+      leastCoveringRect(candidates, avoid_).toAlignedRect();
+  corner_ = static_cast<int>(corners.indexOf(chosen));
+  corner_ = std::max(corner_, 0);
+  setGeometry(chosen);
 }
 
 bool ShortcutGuide::eventFilter(QObject *watched, QEvent *event) {

@@ -524,6 +524,20 @@ private:
   mutable int legendWidth_ = -1;
   mutable QSizeF legendSize_;
   [[nodiscard]] qreal toolbarTop() const;
+  /// Left edge of a toolbar `total` wide: centered on an in-place capture
+  /// (clamped on screen) so it stays next to it, else on the overlay.
+  [[nodiscard]] qreal toolbarLeft(qreal total) const;
+  /// In place with the toolbar above the capture: its menus and tooltips
+  /// open upward, away from the image.
+  [[nodiscard]] bool toolbarAboveImage() const;
+  /// In place with the toolbar below the capture.
+  [[nodiscard]] bool toolbarBelowImage() const;
+  /// What floating chrome (the shortcuts card, the status pill) keeps clear
+  /// of: the selection or the capture with its handles, the toolbar and its
+  /// open menus, the scroll pill, the recents shelf.
+  [[nodiscard]] ChromeObstacles chromeObstacles() const;
+  /// The same, plus the shortcuts card.
+  [[nodiscard]] ChromeObstacles statusPillObstacles() const;
   /// How much vertical room the toolbar actually needs at the current window
   /// width — the image's top margin, not a guessed constant.
   [[nodiscard]] qreal imageTopMargin() const;

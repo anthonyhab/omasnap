@@ -8,6 +8,8 @@
 #include <QPainter>
 
 #include <algorithm>
+#include <limits>
+#include <utility>
 
 QFont chromeFont(int pixelSize, bool bold) {
   static const QFont base = [] {
@@ -213,19 +215,49 @@ void drawAnchoredHotkeyLegend(QPainter &painter, const QRect &bounds,
   }
 }
 
-void drawStatusPill(QPainter &painter, const QRect &bounds,
-                    const QString &text) {
+QRectF leastCoveringRect(const QVector<QRectF> &candidates,
+                         const ChromeObstacles &avoid) {
+  const auto cover = [](const QRectF &rect, const QVector<QRectF> &obstacles) {
+    qreal area = 0;
+    for (const QRectF &obstacle : obstacles) {
+      const QRectF overlap = rect.intersected(obstacle);
+      area += overlap.width() * overlap.height();
+    }
+    return area;
+  };
+  QRectF best;
+  std::pair<qreal, qreal> bestCover{std::numeric_limits<qreal>::max(), 0};
+  for (const QRectF &candidate : candidates) {
+    // Covering a control outranks any amount of covered capture.
+    const std::pair<qreal, qreal> covered{cover(candidate, avoid.controls),
+                                          cover(candidate, avoid.content)};
+    if (covered.first <= 0 && covered.second <= 0)
+      return candidate;
+    if (covered < bestCover) {
+      bestCover = covered;
+      best = candidate;
+    }
+  }
+  return best;
+}
+
+QRectF drawStatusPill(QPainter &painter, const QRect &bounds,
+                      const QString &text, const ChromeObstacles &avoid) {
   if (text.isEmpty())
-    return;
+    return {};
 
   const QFont font = chromeFont(13);
   painter.setFont(font);
   const int width = painter.fontMetrics().horizontalAdvance(text) + 28;
-  const QRectF pill((bounds.width() - width) / 2.0, bounds.height() - 42.0,
-                    width, 30);
+  const qreal left = (bounds.width() - width) / 2.0;
+  const QRectF pill = leastCoveringRect(
+      {QRectF(left, bounds.height() - 42.0, width, 30),
+       QRectF(left, 12.0, width, 30)},
+      avoid);
   painter.setPen(QPen(chromeTheme().panelBorder.brush(pill), 1));
   painter.setBrush(chromeTheme().surface);
   painter.drawRoundedRect(pill, 10, 10);
   painter.setPen(chromeTheme().foreground);
   painter.drawText(pill, Qt::AlignCenter, text);
+  return pill;
 }
