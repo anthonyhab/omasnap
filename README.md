@@ -407,6 +407,15 @@ Install the corresponding Tesseract language data before adding a language to
 `OMARCHY_OCR_LANGS` (which commonly includes the user's script, e.g.
 `tha+eng`), then to `eng`.
 
+OCR asks [Gangway](https://github.com/anthonyhab/gangway) first when it is
+installed: a paired Mac reads the text with Apple's Vision, which reads real
+screenshots (chat bubbles, small UI text) far better than tesseract and in
+about half the time. Without Gangway, without a connected Mac, or after 5 s
+without an answer, omasnap uses tesseract. Vision detects languages itself;
+`OMASNAP_OCR_LANGS` applies to tesseract. `OMASNAP_OCR=tesseract` or
+`OMASNAP_OCR=gangway` uses only that one. Each read logs which engine answered
+(`OCR: 58 characters by Vision on <Mac>, 365 ms`).
+
 ## Controls
 
 The capture picker and fullscreen annotator show a readable shortcuts card in
