@@ -16,6 +16,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QElapsedTimer>
 #include <QFontDatabase>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -38,6 +39,7 @@
 #include <cmath>
 #include <fcntl.h>
 #include <numbers>
+#include <optional>
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -2634,14 +2636,47 @@ bool copyTextToClipboard(const QString &text, QString &error) {
                                 text.toUtf8(), error);
 }
 
-QString recognizeText(const QImage &image, QString &error) {
-  QByteArray payload;
-  QBuffer buffer(&payload);
-  if (!buffer.open(QIODevice::WriteOnly) || !image.save(&buffer, "PNG")) {
-    error = QStringLiteral("Could not prepare image for OCR");
-    return {};
-  }
+namespace {
+// How long Gangway gets before OCR falls back to tesseract. A warm Mac reads a
+// 4K screenshot in about half a second; this only catches a stalled link.
+constexpr int kGangwayOcrTimeoutMs = 5000;
 
+struct GangwayOcr {
+  QString text;
+  QString backend; // who answered, for the log
+};
+
+// OCR by Apple's Vision on a Mac paired with Gangway (`gangway ocr`). Nothing
+// when Gangway couldn't answer (not installed, no Mac connected, timed out),
+// so the caller can fall back; an answer with no text is still an answer.
+std::optional<GangwayOcr> recognizeWithGangway(const QByteArray &png,
+                                               QString &error) {
+  const ProcessResult result = runProcess(
+      QStringLiteral("gangway"),
+      {QStringLiteral("ocr"), QStringLiteral("--json"), QStringLiteral("-")},
+      png, kGangwayOcrTimeoutMs);
+  const QJsonObject reply = QJsonDocument::fromJson(result.output).object();
+  if (!result.finished || result.exitCode != 0 ||
+      !reply.value(QStringLiteral("ok")).toBool()) {
+    // gangway prints "Error: <why>", then the causes on lines of their own.
+    error = result.finished
+                ? QString::fromUtf8(result.error)
+                      .section(QLatin1Char('\n'), 0, 0)
+                      .remove(QRegularExpression(QStringLiteral("^Error: ")))
+                      .trimmed()
+                : QStringLiteral("Gangway did not answer in time");
+    if (error.isEmpty())
+      error = QStringLiteral("Gangway OCR failed");
+    return std::nullopt;
+  }
+  return GangwayOcr{
+      reply.value(QStringLiteral("text")).toString().trimmed(),
+      QStringLiteral("Vision on %1, %2 ms")
+          .arg(reply.value(QStringLiteral("host")).toString())
+          .arg(reply.value(QStringLiteral("round_trip_ms")).toInt())};
+}
+
+QString recognizeWithTesseract(const QByteArray &png, QString &error) {
   QString languages = qEnvironmentVariable("OMASNAP_OCR_LANGS");
   if (languages.isEmpty())
     languages =
@@ -2655,13 +2690,55 @@ QString recognizeText(const QImage &image, QString &error) {
        QStringLiteral("-l"), languages,
        QStringLiteral("--dpi"), QStringLiteral("300"),
        QStringLiteral("-c"), QStringLiteral("preserve_interword_spaces=1")},
-      payload, 30000);
+      png, 30000);
   if (!result.finished || result.exitCode != 0) {
     error = QStringLiteral("OCR failed for languages %1: %2")
                 .arg(languages, QString::fromUtf8(result.error).trimmed());
     return {};
   }
-  const QString text = QString::fromUtf8(result.output).trimmed();
+  return QString::fromUtf8(result.output).trimmed();
+}
+} // namespace
+
+QString recognizeText(const QImage &image, QString &error) {
+  QByteArray payload;
+  QBuffer buffer(&payload);
+  if (!buffer.open(QIODevice::WriteOnly) || !image.save(&buffer, "PNG")) {
+    error = QStringLiteral("Could not prepare image for OCR");
+    return {};
+  }
+
+  // OMASNAP_OCR picks the engine: unset (auto) asks Gangway's Mac first and
+  // falls back to tesseract; "gangway" or "tesseract" uses only that one.
+  const QString provider =
+      qEnvironmentVariable("OMASNAP_OCR", QStringLiteral("auto")).trimmed();
+  QString text;
+  QString backend;
+  if (provider != QStringLiteral("tesseract")) {
+    QString gangwayError;
+    if (const auto answer = recognizeWithGangway(payload, gangwayError)) {
+      text = answer->text;
+      backend = answer->backend;
+    } else if (provider == QStringLiteral("gangway")) {
+      error = QStringLiteral("OCR failed: %1").arg(gangwayError);
+      return {};
+    } else {
+      qInfo().noquote()
+          << QStringLiteral("OCR: Gangway unavailable (%1); using tesseract")
+                 .arg(gangwayError);
+    }
+  }
+  if (backend.isEmpty()) {
+    QElapsedTimer timer;
+    timer.start();
+    text = recognizeWithTesseract(payload, error);
+    if (!error.isEmpty())
+      return {};
+    backend = QStringLiteral("tesseract, %1 ms").arg(timer.elapsed());
+  }
+  qInfo().noquote() << QStringLiteral("OCR: %1 characters by %2")
+                           .arg(text.size())
+                           .arg(backend);
   if (text.isEmpty())
     error = QStringLiteral("No text found in selection");
   return text;

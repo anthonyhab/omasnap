@@ -52,6 +52,7 @@ no user-visible benefit.
 | `xdg-open` | Opening a screenshot's containing folder in the default file browser | For Show in folder |
 | `xdg-mime` / `busctl` | Resolve the default folder application and ask it to select the screenshot with `FileManager1.ShowItems` | Optional — falls back to `xdg-open` |
 | `tesseract` | OCR text recognition | Only if OCR is used; missing tesseract fails just that action |
+| `gangway` | OCR by a paired Mac's Vision (`gangway ocr --json -`), tried before tesseract | No — without it, or without a connected Mac, OCR uses tesseract |
 | `omarchy-notification-send` | Capture-finished notifications | No — falls back silently if absent (checked with `command -v` semantics via failed `QProcess::startDetached`) |
 
 These run through the small `QProcess` helpers in `src/capture.cpp` and

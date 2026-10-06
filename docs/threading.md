@@ -27,7 +27,7 @@ reading its corresponding worker:
 | Watcher | Worker does |
 |---|---|
 | `captureWatcher_` | Reads window/monitor pixels via `captureMonitorPixels` |
-| `ocrWatcher_` | Renders the OCR crop and runs `tesseract` |
+| `ocrWatcher_` | Renders the OCR crop and runs `gangway ocr` or `tesseract` |
 | `finishWatcher_` | Renders/encodes the export, copies/saves/launches the preview, then records the recent document |
 | `snapshotWatcher_` | Writes the crash-recovery working snapshot + operation log |
 | `pinWatcher_` | Renders and launches a pinned compositor window, then records the capture |
@@ -67,7 +67,8 @@ replaced, so idle windows do not poll the filesystem.
 
 ## What this buys, concretely
 
-- **OCR**: whole-image or drag-region text recognition spawns `tesseract`
+- **OCR**: whole-image or drag-region text recognition spawns `gangway ocr`
+  (then `tesseract` if Gangway can't answer)
   and renders a full-resolution crop, both off the UI thread, with a
   scanning animation over the region so the wait reads as progress rather
   than a hang.

@@ -8,6 +8,7 @@
 #include "overlay-chrome.hpp"
 #include "cli-path.hpp"
 #include "clipboard-smoke.hpp"
+#include "ocr-provider-smoke.hpp"
 #include "png-smoke.hpp"
 #include "chrome-theme-smoke.hpp"
 #include "cut-mapping-smoke.hpp"
@@ -13802,6 +13803,10 @@ int main(int argc, char **argv) {
     painter.drawText(ocrImage.rect(), Qt::AlignCenter,
                      QStringLiteral("OCR smoke test 42"));
   }
+  // These checks are tesseract's (its language fallback): keep a paired Mac
+  // out of them. The provider choice has its own smoke (ocr-provider-smoke).
+  const QByteArray savedOcrProvider = qgetenv("OMASNAP_OCR");
+  qputenv("OMASNAP_OCR", "tesseract");
   QString ocrError;
   if (!recognizeText(ocrImage, ocrError)
            .contains(QStringLiteral("OCR smoke test 42")))
@@ -13819,6 +13824,10 @@ int main(int argc, char **argv) {
     qunsetenv("OMARCHY_OCR_LANGS");
   else
     qputenv("OMARCHY_OCR_LANGS", savedOmarchyLangs);
+  if (savedOcrProvider.isEmpty())
+    qunsetenv("OMASNAP_OCR");
+  else
+    qputenv("OMASNAP_OCR", savedOcrProvider);
   if (!fallbackOcr.contains(QStringLiteral("OCR smoke test 42")))
     return 65;
   QTest::mouseMove(&editor, QPoint(400, 312), 20);
@@ -13882,6 +13891,12 @@ int main(int argc, char **argv) {
   if (!runClipboardSmoke(clipboardError)) {
     qWarning().noquote() << clipboardError;
     return 88;
+  }
+
+  QString providerError;
+  if (!runOcrProviderSmoke(providerError)) {
+    qWarning().noquote() << providerError;
+    return EXIT_FAILURE;
   }
 
   QString transformError;
