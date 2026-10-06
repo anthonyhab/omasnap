@@ -7,6 +7,10 @@ earlier development is recorded in the [commit history](https://github.com/omaco
 
 ### Added
 
+- OCR reads with a paired Mac's Vision through Gangway when one is connected,
+  falling back to tesseract (no Gangway, no Mac, or no answer within 5 s).
+  `OMASNAP_OCR=tesseract|gangway` picks one; each read logs which answered.
+
 - `Tab` cycles region selection between free, square, 3:4, and 16:9 while
   capturing; `Shift+Tab` cycles back. The capture guide shows the active aspect.
 

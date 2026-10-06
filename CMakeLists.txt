@@ -163,6 +163,8 @@ qt_add_executable(omasnap-smoke
   tests/selection-repaint-smoke.hpp
   tests/clipboard-smoke.cpp
   tests/clipboard-smoke.hpp
+  tests/ocr-provider-smoke.cpp
+  tests/ocr-provider-smoke.hpp
   tests/png-smoke.cpp
   tests/png-smoke.hpp
   tests/instance-lock-smoke.cpp
