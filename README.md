@@ -134,10 +134,12 @@ Paste this into a Lua config loaded after `require("default.hypr.omarchy")`:
 hl.unbind("PRINT")
 hl.unbind("F12")
 hl.unbind("ALT + SHIFT + 4")
+hl.unbind("SUPER + CTRL + ALT + C")
 
 o.bind("PRINT", "Screenshot", "omasnap")
 o.bind("F12", "Screenshot", "omasnap")
 o.bind("ALT + SHIFT + 4", "Screenshot", "omasnap")
+o.bind("SUPER + CTRL + ALT + C", "Screenshot", "omasnap")
 
 hl.layer_rule({
   match = { namespace = "^omasnap$" },
