@@ -2326,9 +2326,9 @@ QRectF CaptureEditor::snapDragSelection(const QRectF &widgetRect,
                            std::optional<qreal> high, qreal highFrom) {
       Catch fromLow, fromHigh;
       if (low)
-        fromLow = {*low - lowFrom, *low};
+        fromLow = {*low - lowFrom, low};
       if (high)
-        fromHigh = {*high - highFrom, *high};
+        fromHigh = {*high - highFrom, high};
       if (low && high)
         return std::abs(fromLow.shift) <= std::abs(fromHigh.shift) ? fromLow
                                                                    : fromHigh;

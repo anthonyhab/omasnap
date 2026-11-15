@@ -371,22 +371,22 @@ Snapped snapRect(const LineMap &map, const QRectF &rect, unsigned edges,
   if (left && original.right() - *left >= minimumSize) {
     snapped.setLeft(*left);
     result.xs.push_back(*left);
-    result.held[0] = *left;
+    result.held[0] = left;
   }
   if (right && *right - snapped.left() >= minimumSize) {
     snapped.setRight(*right);
     result.xs.push_back(*right);
-    result.held[2] = *right;
+    result.held[2] = right;
   }
   if (top && original.bottom() - *top >= minimumSize) {
     snapped.setTop(*top);
     result.ys.push_back(*top);
-    result.held[1] = *top;
+    result.held[1] = top;
   }
   if (bottom && *bottom - snapped.top() >= minimumSize) {
     snapped.setBottom(*bottom);
     result.ys.push_back(*bottom);
-    result.held[3] = *bottom;
+    result.held[3] = bottom;
   }
   return result;
 }
